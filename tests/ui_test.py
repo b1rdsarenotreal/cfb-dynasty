@@ -1,0 +1,276 @@
+"""End-to-end UI test with a mocked CFBD API.
+Run from the repo root:  python3 tests/ui_test.py
+"""
+import json, random, re, subprocess, sys, time, os
+from urllib.parse import urlparse, parse_qs
+from playwright.sync_api import sync_playwright
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT = os.environ.get("SHOTS", "/tmp")
+PORT = 8765
+
+CONFS = {
+    "SEC": ["Tennessee", "Florida", "Georgia", "Kentucky", "South Carolina", "Vanderbilt",
+            "Arkansas", "Mississippi State", "Alabama", "Ole Miss", "Auburn", "LSU"],
+    "Big Ten": ["Ohio State", "Michigan", "Wisconsin", "Penn State", "Purdue", "Iowa", "Illinois", "Indiana", "Northwestern", "Minnesota", "Michigan State"],
+    "Big 12": ["Texas A&M", "Kansas State", "Nebraska", "Texas", "Oklahoma", "Missouri", "Colorado", "Kansas", "Iowa State", "Baylor", "Texas Tech", "Oklahoma State"],
+    "Pac-10": ["UCLA", "Arizona", "Oregon", "USC", "Washington", "Stanford", "California", "Oregon State", "Washington State", "Arizona State"],
+    "ACC": ["Florida State", "Georgia Tech", "Virginia", "Clemson", "North Carolina", "NC State", "Wake Forest", "Maryland", "Duke"],
+    "Big East": ["Miami", "Syracuse", "Virginia Tech", "West Virginia", "Boston College", "Pittsburgh", "Temple", "Rutgers"],
+    "Mid-American": ["Marshall", "Toledo", "Western Michigan", "Ball State", "Miami (OH)", "Bowling Green", "Ohio", "Akron", "Kent State", "Central Michigan", "Eastern Michigan", "Northern Illinois"],
+    "FBS Independents": ["Notre Dame", "Navy", "Army"],
+}
+DIVS = {"SEC": ("East", "West", 6), "Big 12": ("North", "South", 6), "Mid-American": ("East", "West", 6)}
+COLORS = ["#FF8200", "#0021A5", "#BA0C2F", "#9E1B32", "#BB0000", "#00274C", "#BF5700", "#782F40", "#F47321", "#461D7C"]
+
+def teams(year):
+    out, i = [], 0
+    for conf, names in CONFS.items():
+        for k, n in enumerate(names):
+            div = None
+            if conf in DIVS:
+                a, b, cut = DIVS[conf]
+                div = a if k < cut else b
+            out.append({"id": i, "school": n, "mascot": "", "abbreviation": n[:4].upper(), "alternateNames": [],
+                        "conference": conf, "division": div, "classification": "fbs", "color": COLORS[i % len(COLORS)],
+                        "alternateColor": "#fff", "logos": [], "twitter": None, "location": None})
+            i += 1
+    return out
+
+def strength(name):
+    r = random.Random(name)
+    return r.uniform(-12, 18)
+
+def games(year, season_type):
+    rnd = random.Random(year * 10 + (season_type == "postseason"))
+    gid = year * 10000 + (5000 if season_type == "postseason" else 0)
+    out = []
+    def mk(week, h, a, notes=None, neutral=False, conf=False, completed=True):
+        nonlocal gid
+        gid += 1
+        hs = max(0, int(rnd.gauss(28 + (strength(h) - strength(a)) / 2, 10)))
+        as_ = max(0, int(rnd.gauss(25 - (strength(h) - strength(a)) / 2, 10)))
+        if hs == as_: hs += 3
+        def q(t):
+            parts = [0, 0, 0, 0]
+            for _ in range(t): parts[rnd.randrange(4)] += 1
+            return parts
+        return {"id": gid, "season": year, "week": week, "seasonType": season_type, "startDate": f"{year}-09-{min(28, week*2):02d}T19:00:00.000Z",
+                "startTimeTBD": False, "completed": completed, "neutralSite": neutral, "conferenceGame": conf,
+                "homeTeam": h, "homeConference": None, "homePoints": hs if completed else None, "homeLineScores": q(hs) if completed else None,
+                "awayTeam": a, "awayConference": None, "awayPoints": as_ if completed else None, "awayLineScores": q(as_) if completed else None,
+                "notes": notes}
+    if season_type == "postseason":
+        return [mk(1, "Tennessee", "Florida State", "Fiesta Bowl presented by Tostitos", True),
+                mk(1, "Ohio State", "Texas A&M", "Sugar Bowl", True), mk(1, "Wisconsin", "UCLA", "Rose Bowl Game", True),
+                mk(1, "Florida", "Syracuse", "Orange Bowl", True)] + \
+               [mk(1, "Georgia", "Virginia", f"Bowl {i}", True) for i in range(12)]
+    for conf, names in CONFS.items():
+        if conf == "FBS Independents": continue
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                if (i + j) % 3 == 0 or (abs(i - j) <= 2):
+                    wk = 3 + ((i * 7 + j) % 10)
+                    h, a = (names[i], names[j]) if (i + j) % 2 else (names[j], names[i])
+                    out.append(mk(wk, h, a, conf=True))
+    allt = [t for ns in CONFS.values() for t in ns]
+    for k, t in enumerate(allt):
+        out.append(mk(1, t, "Some FCS School"))
+        out.append(mk(2, t, allt[(k + 31) % len(allt)]))
+    out.append(mk(14, "Tennessee", "Mississippi State", "SEC Championship Game", True, True))
+    return out
+
+def rankings(year):
+    allt = [t for ns in CONFS.values() for t in ns]
+    return [{"season": year, "seasonType": "regular", "week": w, "polls": [{"poll": "AP Top 25", "ranks": [
+        {"rank": i + 1, "school": s, "conference": None, "firstPlaceVotes": 0, "points": 0} for i, s in enumerate(sorted(allt, key=strength, reverse=True)[:25])]}]} for w in range(1, 16)]
+
+def handle(route):
+    u = urlparse(route.request.url)
+    q = {k: v[0] for k, v in parse_qs(u.query).items()}
+    year = int(q.get("year", 1998))
+    auth = route.request.headers.get("authorization", "")
+    if auth != "Bearer TESTKEY":
+        return route.fulfill(status=401, body="{}")
+    if u.path == "/teams/fbs":
+        body = teams(year) if year <= 2026 else []
+    elif u.path == "/games":
+        body = games(year, q.get("seasonType", "regular")) if year <= 2026 else []
+    elif u.path == "/rankings":
+        body = rankings(year)
+    else:
+        body = []
+    route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+def main():
+    server = subprocess.Popen([sys.executable, "-m", "http.server", str(PORT)], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(1)
+    errors = []
+    try:
+        with sync_playwright() as p:
+            b = p.chromium.launch()
+            page = b.new_page(viewport={"width": 1280, "height": 900})
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            page.on("console", lambda m: errors.append(m.text) if m.type == "error" and "fonts" not in m.text else None)
+            page.on("dialog", lambda d: d.accept("DELETE") if d.type == "prompt" else d.accept())
+            page.route("https://api.collegefootballdata.com/**", handle)
+            page.route(re.compile(r"https://fonts\.(googleapis|gstatic)\.com/.*"), lambda r: r.abort())
+            page.goto(f"http://localhost:{PORT}/index.html")
+            page.fill("#s-key", "TESTKEY")
+            page.screenshot(path=f"{OUT}/01-setup.png")
+            page.click("#s-go")
+            page.wait_for_selector(".game", timeout=15000)
+            assert "1998 Schedule" in page.text_content("h1")
+            # SEC title game from real data must have been removed
+            n_games = page.evaluate("cfb.league.seasons[1998].games.length")
+            assert not page.evaluate("cfb.league.seasons[1998].games.some(g => g.home==='Tennessee' && g.away==='Mississippi State' && g.week===14)")
+            print("imported games:", n_games)
+            page.screenshot(path=f"{OUT}/02-schedule.png")
+
+            # Week 1: use real results
+            page.click("#w-real")
+            page.wait_for_timeout(300)
+            # Week 2: enter one game by hand, quarter by quarter
+            page.click("[data-week='2']")
+            page.click(".game >> nth=0")
+            page.wait_for_selector("dialog[open]")
+            for side, qs in (("away", [7, 3, 0, 14]), ("home", [0, 10, 7, 0])):
+                for i, v in enumerate(qs):
+                    page.fill(f"input[data-side='{side}'][data-q='{i}']", str(v))
+            assert page.inner_text("#m-away-tot") == "24"
+            page.screenshot(path=f"{OUT}/03-editor.png")
+            page.click("#m-save")
+            page.wait_for_timeout(300)
+            g = page.evaluate("cfb.league.seasons[1998].games.filter(g=>g.week===2 && g.final)[0]")
+            assert g["awayScore"] == 24 and g["homeScore"] == 17 and g["source"] == "manual", g
+            # tie should be rejected
+            page.click(".game >> nth=1")
+            for side in ("away", "home"):
+                for i in range(4):
+                    page.fill(f"input[data-side='{side}'][data-q='{i}']", "7")
+            page.click("#m-save")
+            assert page.is_visible("dialog[open]"), "tie should not save"
+            page.click("#m-sim")
+            page.click("#m-save")
+            page.wait_for_timeout(200)
+            # Simulate the rest of the regular season week by week
+            for _ in range(20):
+                btn = page.query_selector("#w-sim")
+                if btn:
+                    btn.click(); page.wait_for_timeout(150)
+                chips = page.query_selector_all(".chip:not(.done)")
+                if not chips: break
+                chips[0].click()
+            assert page.evaluate("cfb.league.seasons[1998].games.every(g=>g.final)")
+
+            # Standings
+            page.click("a[href='#/standings']")
+            page.wait_for_selector(".card h2")
+            assert "East" in page.text_content("#app"), "SEC divisions shown in 1998"
+            page.screenshot(path=f"{OUT}/04-standings.png", full_page=False)
+
+            # Postseason: title games
+            page.click("a[href='#/postseason']")
+            page.click("#ps-ccg")
+            page.wait_for_timeout(200)
+            ccgs = page.evaluate("cfb.league.seasons[1998].games.filter(g=>g.type==='ccg').map(g=>g.conference).sort()")
+            print("CCGs 1998:", ccgs)
+            assert ccgs == ["Big 12", "Mid-American", "SEC"], ccgs
+            page.click("a[href='#/schedule']")
+            page.click("#w-sim"); page.wait_for_timeout(200)
+
+            # Poll: publish final with a commissioner tweak (move #3 up to #1)
+            page.click("a[href='#/polls']")
+            page.click("[data-pw='99']")
+            third = page.evaluate("document.querySelectorAll('.poll-row')[2].innerText.split('\\n')[1]")
+            page.click("[data-up='2']"); page.click("[data-up='1']")
+            page.click("#p-publish")
+            page.wait_for_timeout(200)
+            final = page.evaluate("cfb.league.seasons[1998].polls[99].ranks")
+            assert final[0] == third, (final[:3], third)
+            page.click("#p-real"); page.wait_for_timeout(300)
+            page.screenshot(path=f"{OUT}/05-polls.png")
+
+            # BCS title game
+            page.click("a[href='#/postseason']")
+            page.click("[data-step='field']")
+            page.click("#ps-propose")
+            page.click("#ps-build")
+            page.wait_for_timeout(200)
+            ncg = page.evaluate("cfb.league.seasons[1998].games.find(g=>g.type==='playoff')")
+            assert ncg["home"] == final[0], ncg
+            page.click(".game[data-game]")
+            page.click("#m-sim"); page.click("#m-save"); page.wait_for_timeout(200)
+            # Bowls
+            page.click("[data-step='bowls']")
+            page.click("#ps-bowls"); page.wait_for_timeout(200)
+            names = page.evaluate("cfb.league.seasons[1998].games.filter(g=>g.type==='bowl').map(g=>g.name)")
+            print(len(names), "bowls, first:", names[:4])
+            assert "Rose Bowl Game" in names or "Rose Bowl" in names, names[:6]
+            page.screenshot(path=f"{OUT}/06-bowls.png")
+            page.click("a[href='#/schedule']"); page.click("[data-week='post']")
+            page.click("#w-sim"); page.wait_for_timeout(200)
+            page.evaluate("location.hash='#/postseason'"); page.wait_for_timeout(200)
+            assert page.is_visible(".banner")
+            page.screenshot(path=f"{OUT}/07-champion.png")
+
+            # Next season
+            page.click("#ps-next")
+            page.wait_for_function("cfb.league.currentYear === 1999", timeout=20000); page.wait_for_selector(".game")
+            assert page.evaluate("cfb.league.currentYear") == 1999
+            prior = page.evaluate("Object.keys(cfb.league.seasons[1999].prior).length")
+            assert prior > 50
+
+            # Jump into the future: 12-team era behaviour with a cloned season
+            page.evaluate("""() => { const L = cfb.league; const s = L.seasons[1999]; }""")
+            page.click("a[href='#/history']")
+            page.screenshot(path=f"{OUT}/08-history.png")
+            page.click("a[href='#/teams']")
+            page.screenshot(path=f"{OUT}/09-teams.png")
+            page.click("a[href='#/settings']")
+            page.select_option("#st-format", "CFP12")
+            page.screenshot(path=f"{OUT}/10-settings.png")
+
+            # Persistence: reload and confirm league survives
+            page.wait_for_timeout(500)
+            page.reload()
+            page.wait_for_selector("#year-select")
+            assert page.evaluate("cfb.league.seasons[1999].settings.format") == "CFP12"
+
+            # 12-team bracket on 1999 after simming everything
+            page.click("a[href='#/schedule']")
+            for _ in range(25):
+                btn = page.query_selector("#w-sim")
+                if btn: btn.click(); page.wait_for_timeout(100)
+                chips = page.query_selector_all(".chip:not(.done)")
+                if not chips: break
+                chips[0].click()
+            page.click("a[href='#/postseason']")
+            page.click("#ps-ccg"); page.wait_for_timeout(100)
+            page.click("a[href='#/schedule']"); page.click("#w-sim"); page.wait_for_timeout(100)
+            page.click("a[href='#/postseason']"); page.click("[data-step='field']")
+            page.click("#ps-propose"); page.click("#ps-build"); page.wait_for_timeout(200)
+            page.screenshot(path=f"{OUT}/11-bracket.png", full_page=True)
+            for _ in range(4):
+                page.click("a[href='#/schedule']"); page.click("[data-week='post']")
+                page.click("#w-sim"); page.wait_for_timeout(150)
+            champ = page.evaluate("(() => { const s = cfb.league.seasons[1999]; const f = s.games.find(g=>g.round==='final'); return f && f.final ? (f.homeScore>f.awayScore?f.home:f.away) : null })()")
+            print("1999 12-team champion:", champ)
+            assert champ
+
+            # Mobile layout check
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.click("a[href='#/schedule']")
+            page.screenshot(path=f"{OUT}/12-mobile.png")
+            sw = page.evaluate("document.documentElement.scrollWidth")
+            assert sw <= 392, f"horizontal scroll on mobile: {sw}"
+            b.close()
+    finally:
+        server.terminate()
+    real_errors = [e for e in errors if "ERR_FAILED" not in e and "net::" not in e]
+    if real_errors:
+        print("CONSOLE ERRORS:", real_errors); sys.exit(1)
+    print("UI test passed.")
+
+if __name__ == "__main__":
+    main()

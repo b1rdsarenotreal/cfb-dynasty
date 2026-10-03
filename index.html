@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CFB Commissioner</title>
+  <meta name="description" content="A commissioner-style college football dynasty tracker: scores, standings, polls, bowls and playoffs from the BCS era forward.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><ellipse cx='50' cy='50' rx='44' ry='28' transform='rotate(-35 50 50)' fill='%238b4513'/><path d='M35 60 L65 40 M42 53 l5 5 M49 48 l5 5 M56 43 l5 5' stroke='white' stroke-width='4'/></svg>">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">◆</span> <span id="league-name">CFB Commissioner</span></div>
+    <div class="season-picker" id="season-picker"></div>
+    <nav id="nav" class="nav"></nav>
+  </header>
+  <main id="app" class="app"><p class="muted">Loading…</p></main>
+  <dialog id="modal"></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
