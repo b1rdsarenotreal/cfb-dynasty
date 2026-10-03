@@ -27,15 +27,11 @@ function cleanBowlName(notes) {
   return n || null;
 }
 
-function lineScores(arr) {
-  return Array.isArray(arr) ? arr.map(x => Number(x) || 0) : [];
-}
-
 function mapTeam(t) {
   return {
     id: t.id, school: t.school, abbr: t.abbreviation || t.school.slice(0, 4).toUpperCase(),
     mascot: t.mascot || '', conference: t.conference || 'FBS Independents', division: t.division || null,
-    color: t.color || '#555555', altColor: t.alternateColor || '#dddddd', logo: t.logos?.[0] || null,
+    color: t.color || '#555555', altColor: t.alternateColor || '#dddddd', logo: t.logos?.[0] || null, logoDark: t.logos?.[1] || null,
   };
 }
 
@@ -45,13 +41,9 @@ function isRealCCG(g, teams) {
 }
 
 function mapGame(season, g) {
-  const real = g.completed && g.homePoints != null ? {
-    homeScore: g.homePoints, awayScore: g.awayPoints,
-    homeQ: lineScores(g.homeLineScores), awayQ: lineScores(g.awayLineScores),
-  } : null;
   return blankGame(season, {
     week: g.week, home: g.homeTeam, away: g.awayTeam, neutral: !!g.neutralSite,
-    confGame: g.conferenceGame, date: g.startDate, real, cfbdId: g.id,
+    confGame: g.conferenceGame, date: g.startDate, cfbdId: g.id,
   });
 }
 
@@ -164,10 +156,4 @@ export function computeRatings(season) {
     prior: effectivePrior(season), priorWeight: season.settings.priorWeight,
   });
   return withAdjustments(r, season.adjustments);
-}
-
-export function applyRealResult(g) {
-  if (!g.real) return false;
-  Object.assign(g, { homeQ: [...g.real.homeQ], awayQ: [...g.real.awayQ], homeScore: g.real.homeScore, awayScore: g.real.awayScore, final: true, source: 'real' });
-  return true;
 }

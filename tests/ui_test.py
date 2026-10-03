@@ -85,6 +85,14 @@ def rankings(year):
     return [{"season": year, "seasonType": "regular", "week": w, "polls": [{"poll": "AP Top 25", "ranks": [
         {"rank": i + 1, "school": s, "conference": None, "firstPlaceVotes": 0, "points": 0} for i, s in enumerate(sorted(allt, key=strength, reverse=True)[:25])]}]} for w in range(1, 16)]
 
+def logo_csv():
+    rows = ["id,school,mascot,abbreviation,alt_name1,alt_name2,alt_name3,conference,division,color,alt_color,logo,logos[1]"]
+    for tm in teams(1998):
+        rows.append(f'{tm["id"]},"{tm["school"]}",X,{tm["abbreviation"]},,,,,,#123456,#ffffff,http://a.espncdn.com/i/teamlogos/ncaa/500/{tm["id"]}.png,http://a.espncdn.com/i/teamlogos/ncaa/500-dark/{tm["id"]}.png')
+    return "\n".join(rows)
+LOGO_CSV = logo_csv()
+LOGO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="5" fill="#c33"/></svg>'
+
 def handle(route):
     u = urlparse(route.request.url)
     q = {k: v[0] for k, v in parse_qs(u.query).items()}
@@ -115,6 +123,8 @@ def main():
             page.on("dialog", lambda d: d.accept("DELETE") if d.type == "prompt" else d.accept())
             page.route("https://api.collegefootballdata.com/**", handle)
             page.route(re.compile(r"https://fonts\.(googleapis|gstatic)\.com/.*"), lambda r: r.abort())
+            page.route("https://gist.githubusercontent.com/**", lambda r: r.fulfill(status=200, content_type="text/plain", body=LOGO_CSV))
+            page.route("https://a.espncdn.com/**", lambda r: r.fulfill(status=200, content_type="image/svg+xml", body=LOGO_SVG))
             page.goto(f"http://localhost:{PORT}/index.html")
             page.fill("#s-key", "TESTKEY")
             page.screenshot(path=f"{OUT}/01-setup.png")
@@ -127,8 +137,13 @@ def main():
             print("imported games:", n_games)
             page.screenshot(path=f"{OUT}/02-schedule.png")
 
-            # Week 1: use real results
-            page.click("#w-real")
+            assert page.query_selector("#w-real") is None and "real" not in page.text_content(".games").lower()
+            # Logos from the gist list
+            page.wait_for_function("document.querySelectorAll('.game picture.logo img').length > 10")
+            src = page.get_attribute(".game picture.logo img", "src")
+            assert src.startswith("https://a.espncdn.com/i/teamlogos/ncaa/500/"), src
+            # Week 1: simulate
+            page.click("#w-sim")
             page.wait_for_timeout(300)
             # Week 2: enter one game by hand, quarter by quarter
             page.click("[data-week='2']")
@@ -178,6 +193,32 @@ def main():
             assert ccgs == ["Big 12", "Mid-American", "SEC"], ccgs
             page.click("a[href='#/schedule']")
             page.click("#w-sim"); page.wait_for_timeout(200)
+
+            # Polls: publish Week 5, then Week 6 should start from it
+            page.click("a[href='#/polls']")
+            page.click("[data-pw='5']")
+            page.click("#p-suggest"); page.click("[data-up='4']"); page.click("#p-publish"); page.wait_for_timeout(150)
+            w5 = page.evaluate("cfb.league.seasons[1998].polls[5].ranks")
+            page.click("[data-pw='6']")
+            draft6 = page.evaluate("[...document.querySelectorAll('.poll-row .poll-team a')].map(a=>a.textContent)")
+            assert draft6 == w5, (draft6[:5], w5[:5])
+            page.select_option("#p-base", "suggestion")
+            page.click("[data-pw='7']")
+            draft7 = page.evaluate("[...document.querySelectorAll('.poll-row .poll-team a')].map(a=>a.textContent)")
+            page.click("#p-prev")
+            assert page.evaluate("[...document.querySelectorAll('.poll-row .poll-team a')].map(a=>a.textContent)") == w5
+            page.screenshot(path=f"{OUT}/05a-polls-prev.png")
+            page.select_option("#p-base", "previous")
+
+            # Team profile
+            page.click("a[href='#/standings']")
+            page.click(".card a.team-link")
+            page.wait_for_selector(".team-hero")
+            assert page.query_selector_all("tr[data-game]"), "profile schedule rows"
+            page.screenshot(path=f"{OUT}/05b-team.png", full_page=True)
+            page.fill("#tp-mascot", "Testers"); page.press("#tp-mascot", "Tab"); page.wait_for_timeout(100)
+            nm = page.evaluate("decodeURIComponent(location.hash.split('/')[2])")
+            assert page.evaluate(f"cfb.league.seasons[1998].teams[{json.dumps(nm)}].mascot") == "Testers"
 
             # Poll: publish final with a commissioner tweak (move #3 up to #1)
             page.click("a[href='#/polls']")

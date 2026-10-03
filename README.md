@@ -6,10 +6,12 @@ It is a static site with no build step and no server, so it runs on GitHub Pages
 
 ## What it does
 
-- **Schedule & scores**: enter any game quarter by quarter (plus overtime), apply the real historical result, or simulate it. Simulations are suggestions you can edit before saving. Whole weeks can be filled with real results or simulated in one click.
+- **Schedule & scores**: enter any game quarter by quarter (plus overtime) or simulate it. Simulations are suggestions you can edit before saving. A whole week can be simulated in one click.
 - **Simulation from prior stats**: every team has an offense and defense rating, solved from game scores. Each season starts from last season's ratings, regressed toward average. During the season, the ratings update from your dynasty's results. An optional *historical anchor* blends in each team's real-world strength for that year, so a simulated 2001 Miami plays like 2001 Miami.
 - **Standings**: conference and division tables, with tiebreakers in this order: conference record, head-to-head, overall record, rating. You can turn any conference's title game on or off, and you can override any champion.
-- **Polls**: the app suggests a Top 25 from team strength plus résumé. You drag teams into your own order and publish it each week, and your poll is what drives selection. The real AP poll can be loaded alongside for comparison.
+- **Polls**: each new week starts from your previous published poll (or last season's final poll), so you only adjust what changed. Every row shows the team's latest result and where the suggested ranking (team strength plus résumé) would put it, and unranked teams the suggestion likes are one click away. You can switch the starting point to the suggestion instead. Your published poll is what drives selection. The real AP poll can be loaded alongside for comparison.
+- **Team profiles**: click any team name for its page: record, conference finish, rating, scoring, the season schedule with results and win chances, poll history, and its whole dynasty record (final ranks, conference titles, bowls, national titles). You can also edit its colors, logo, conference and strength there.
+- **Logos**: pulled from [this college football logo list](https://gist.github.com/saiemgilani/c6596f0e1c8b148daabc2b7f1e6f6add), which points to ESPN's logo images, and cached in your browser. Teams it doesn't cover fall back to the logo CFBD supplies. Any team's logo can be replaced with your own image URL on its profile.
 - **Postseason by era**, with defaults that match real history:
   - 1998–2013: the BCS. #1 plays #2, and automatic-qualifier conference champions get the top bowls.
   - 2014–2023: a 4-team playoff, with the real semifinal bowl rotation.
@@ -49,7 +51,8 @@ API usage is light: about 3–5 calls when a season is imported, plus one call i
 | Swap a playoff seed | Postseason → Playoff → change the seed → Rebuild bracket |
 | Change a bowl matchup | Postseason → Bowls → team dropdowns |
 | Realign a team or move one up to FBS | Teams |
-| Make a team stronger or weaker | Teams → Adj (points) |
+| Make a team stronger or weaker | Teams → Adj (points), or the team's profile |
+| Change a team's logo or colors | Team profile → Commissioner edits |
 | Change the playoff format | Settings |
 
 ## Project layout
@@ -67,6 +70,7 @@ js/polls.js         suggested Top 25
 js/postseason.js    title games, BCS/CFP selection, brackets, bowls
 js/eras.js          era defaults (formats, title-game years, bowls)
 js/store.js         saving, backups
+js/logos.js         logo list loading and lookup
 tests/              logic tests (Node) and a UI test (Playwright, mocked API)
 ```
 
