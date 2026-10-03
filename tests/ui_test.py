@@ -153,6 +153,7 @@ def main():
                 for i, v in enumerate(qs):
                     page.fill(f"input[data-side='{side}'][data-q='{i}']", str(v))
             assert page.inner_text("#m-away-tot") == "24"
+            assert page.get_attribute("input[data-side='home'][data-q='0']", "type") == "text"
             page.screenshot(path=f"{OUT}/03-editor.png")
             page.click("#m-save")
             page.wait_for_timeout(300)
@@ -168,6 +169,19 @@ def main():
             page.click("#m-sim")
             page.click("#m-save")
             page.wait_for_timeout(200)
+            # One-click sim from the scores page
+            page.click("[data-week='3']")
+            before = page.evaluate("cfb.league.seasons[1998].games.filter(g=>g.week===3 && g.final).length")
+            page.click("[data-simgame] >> nth=0")
+            page.wait_for_timeout(200)
+            assert not page.is_visible("dialog[open]"), "sim button should not open the editor"
+            assert page.evaluate("cfb.league.seasons[1998].games.filter(g=>g.week===3 && g.final).length") == before + 1
+            # Mid-season: nobody is a conference champion yet
+            page.click("a[href='#/standings']")
+            page.wait_for_selector(".card h2")
+            assert not page.query_selector_all(".card .badge.gold"), "no champions before conference play ends"
+            page.screenshot(path=f"{OUT}/04a-standings-midseason.png")
+            page.click("a[href='#/schedule']")
             # Simulate the rest of the regular season week by week
             for _ in range(20):
                 btn = page.query_selector("#w-sim")
@@ -176,12 +190,15 @@ def main():
                 chips = page.query_selector_all(".chip:not(.done)")
                 if not chips: break
                 chips[0].click()
-            assert page.evaluate("cfb.league.seasons[1998].games.every(g=>g.final)")
+            page.wait_for_function("cfb.league.seasons[1998].games.every(g=>g.final)", timeout=5000)
 
             # Standings
             page.click("a[href='#/standings']")
             page.wait_for_selector(".card h2")
             assert "East" in page.text_content("#app"), "SEC divisions shown in 1998"
+            txt = page.text_content("#app")
+            assert "decided by title game" in txt, "CCG conferences wait for the title game"
+            assert page.query_selector_all(".card .badge.gold"), "non-title-game conferences crowned after conference play"
             page.screenshot(path=f"{OUT}/04-standings.png", full_page=False)
 
             # Postseason: title games

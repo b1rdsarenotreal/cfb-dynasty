@@ -25,7 +25,7 @@ a { color: var(--accent); }
 .nav a:hover { color: #fff; background: #23262d; }
 .nav a.active { color: #fff; background: var(--accent); }
 
-.app { max-width: 1180px; margin: 0 auto; padding: 20px 16px 80px; }
+.app { width: 100%; margin: 0; padding: 20px 28px 80px; }
 h1, h2, h3 { font-family: var(--display); text-transform: uppercase; letter-spacing: .03em; margin: 0 0 10px; }
 h1 { font-size: 30px; } h2 { font-size: 21px; } h3 { font-size: 16px; }
 .muted { color: var(--muted); }
@@ -96,6 +96,9 @@ dialog::backdrop { background: rgba(10,12,16,.55); }
 .modal-foot { padding: 12px 18px; border-top: 1px solid var(--line); display: flex; gap: 8px; flex-wrap: wrap; }
 .qgrid { display: grid; grid-template-columns: minmax(120px, 1fr) repeat(5, 54px) 60px; gap: 6px; align-items: center; }
 .qgrid input { width: 100%; text-align: center; font-family: var(--mono); padding: 6px 2px; }
+input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+.game .meta .btn.sm { margin-left: auto; }
 .qgrid .head { font-size: 11px; color: var(--muted); text-align: center; text-transform: uppercase; }
 .qgrid .tot { font: 700 20px var(--mono); text-align: center; }
 .hint { background: var(--panel-2); border: 1px dashed var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px; }

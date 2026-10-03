@@ -155,6 +155,7 @@ function gameCard(g) {
     meta += `<span>${esc(fav)} ${Math.round(Math.max(wp, 1 - wp) * 100)}%</span>`;
   }
   if (g.neutral) meta += '<span>Neutral</span>';
+  if (!g.final && g.home && g.away) meta += `<button class="btn sm" data-simgame="${g.id}" title="Simulate this game and save the result">🎲 Sim</button>`;
   return `<div class="game" data-game="${g.id}" tabindex="0">${line(g.away, g.awayQ, g.awayScore)}${line(g.home, g.homeQ, g.homeScore)}<div class="meta">${meta}</div></div>`;
 }
 function seedOf(g, t) {
@@ -163,8 +164,16 @@ function seedOf(g, t) {
   return i === -1 ? null : i + 1;
 }
 function bindGameCards(root = app) {
+  $$('[data-simgame]', root).forEach(b => (b.onclick = e => {
+    e.stopPropagation();
+    const g = S().games.find(x => x.id === b.dataset.simgame);
+    if (!g || g.final) return;
+    Object.assign(g, simResult(R(), g));
+    const w = winnerOf(g), l = w === g.home ? g.away : g.home;
+    afterResults(); toast(`${w} ${Math.max(g.homeScore, g.awayScore)}, ${l} ${Math.min(g.homeScore, g.awayScore)}${g.homeQ.length > 4 ? ' (OT)' : ''}`);
+  }));
   $$('.game[data-game]', root).forEach(el => {
-    el.onclick = e => { if (!e.target.closest('a')) openGame(el.dataset.game); };
+    el.onclick = e => { if (!e.target.closest('a, button')) openGame(el.dataset.game); };
     el.onkeydown = e => { if (e.key === 'Enter') openGame(el.dataset.game); };
   });
 }
@@ -232,7 +241,7 @@ function openGame(id, isNew = false) {
         <div></div>${['1', '2', '3', '4', 'OT'].map(h => `<div class="head">${h}</div>`).join('')}<div class="head">Final</div>
         ${['away', 'home'].map(side => `
           <div class="team-cell" id="m-${side}-label"></div>
-          ${Array.from({ length: qn }, (_, i) => `<input type="number" min="0" inputmode="numeric" data-side="${side}" data-q="${i}" value="${i < 4 ? val(g[side + 'Q'], i) : otVal(g[side + 'Q'])}" aria-label="${side} ${i < 4 ? 'Q' + (i + 1) : 'OT'}">`).join('')}
+          ${Array.from({ length: qn }, (_, i) => `<input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="3" autocomplete="off" data-side="${side}" data-q="${i}" value="${i < 4 ? val(g[side + 'Q'], i) : otVal(g[side + 'Q'])}" aria-label="${side} ${i < 4 ? 'Q' + (i + 1) : 'OT'}">`).join('')}
           <div class="tot" id="m-${side}-tot"></div>`).join('')}
       </div>
       <div id="m-preview"></div>
@@ -297,6 +306,7 @@ function openGame(id, isNew = false) {
     const read = side => Array.from({ length: qn }, (_, i) => q(side, i).value);
     const hq = read('home'), aq = read('away');
     if ([...hq.slice(0, 4), ...aq.slice(0, 4)].some(v => v === '')) return toast('Fill in all four quarters (0 is fine).', true);
+    if ([...hq, ...aq].some(v => v !== '' && !/^\d+$/.test(v.trim()))) return toast('Scores must be whole numbers.', true);
     const toQ = arr => { const out = arr.slice(0, 4).map(Number); if (arr[4] !== '' || (hq[4] !== '' || aq[4] !== '')) out.push(Number(arr[4]) || 0); return out; };
     const homeQ = toQ(hq), awayQ = toQ(aq);
     const homeScore = sum(homeQ), awayScore = sum(awayQ);
@@ -335,7 +345,7 @@ function renderStandings() {
       <div class="row small" style="margin-top:10px">
         <label class="check"><input type="checkbox" data-ccg="${esc(c.conf)}" ${hasCCG(s, c.conf) ? 'checked' : ''}> Title game</label>
         <span class="spacer"></span>
-        <label class="row" style="gap:6px">Champion <select data-champ="${esc(c.conf)}"><option value="">Automatic${champ && !override ? ` (${esc(champ)})` : ''}</option>${members.map(t => `<option ${t === override ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
+        <label class="row" style="gap:6px">Champion <select data-champ="${esc(c.conf)}"><option value="">Automatic${override ? '' : champ ? ` (${esc(champ)})` : hasCCG(s, c.conf) ? ' (decided by title game)' : ' (after conference play)'}</option>${members.map(t => `<option ${t === override ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
       </div>`;
     return `<div class="card"><h2>${esc(c.conf)}</h2><div class="table-wrap">${tables}</div>${controls}</div>`;
   };

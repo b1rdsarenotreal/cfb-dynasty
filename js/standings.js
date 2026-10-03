@@ -120,14 +120,23 @@ export function conferenceChampion(season, conf, ratings) {
   const override = season.overrides?.champions?.[conf];
   if (override) return override;
   if (conf === INDEPENDENT) return null;
+  // No champion until the conference's regular season is complete…
+  if (!conferenceSeasonComplete(season, conf)) return null;
+  // …and, where there's a title game, until it has been played.
   const ccg = season.games.find(g => g.type === 'ccg' && g.conference === conf);
   if (ccg) return winnerOf(ccg);
+  if (hasCCG(season, conf)) return null;
   const { table, rec } = standings(season, ratings);
   const c = table.find(x => x.conf === conf);
   if (!c) return null;
   // Without a title game, best conference record across divisions wins.
   const all = sortGroup(season, c.divisions.flatMap(d => d.teams), rec, ratings);
   return all[0] || null;
+}
+
+export function conferenceSeasonComplete(season, conf) {
+  const confGames = season.games.filter(g => isConferenceGame(season, g) && season.teams[g.home].conference === conf);
+  return confGames.length > 0 && confGames.every(g => g.final);
 }
 
 export function allChampions(season, ratings) {
