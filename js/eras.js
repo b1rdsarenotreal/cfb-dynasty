@@ -2,6 +2,7 @@
 // the postseason format and each conference's title game in Settings.
 
 export const FORMATS = {
+  CFP16: '16-team playoff (all conference champions + BCS at-large)',
   CFP4: '4-team playoff (BCS top 4)',
   BCS: 'BCS title game (BCS #1 vs #2)',
   CFP12: 'College Football Playoff (12 teams)',
@@ -10,9 +11,11 @@ export const FORMATS = {
 
 // This dynasty breaks from history: every season ends in a 4-team playoff
 // seeded by the BCS standings, with everyone else going to bowls.
+// Seasons after the dynasty's first one use the 16-team playoff.
 export function defaultFormat() {
   return 'CFP4';
 }
+export const FUTURE_FORMAT = 'CFP16';
 
 // 12-team seeding: 2024 gave the top-4 seeds (byes) to the four highest-ranked
 // conference champions; from 2025 on, seeds follow the rankings straight up.

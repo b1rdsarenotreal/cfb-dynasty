@@ -4,7 +4,7 @@ import { newSeasonShell, computeRatings, cloneSeason } from '../js/league.js';
 import { simulateGame, winProbability } from '../js/sim.js';
 import { standings, records, conferenceChampion, winnerOf } from '../js/standings.js';
 import { suggestPoll } from '../js/polls.js';
-import { syncCCGs, selectField, buildPlayoff, buildBowls, resolveBracket, nationalChampion, blankGame } from '../js/postseason.js';
+import { syncCCGs, selectField, buildPlayoff, buildBowls, resolveBracket, nationalChampion, blankGame, fullRanking } from '../js/postseason.js';
 
 function makeSeason(year, format) {
   const s = newSeasonShell(year);
@@ -200,3 +200,40 @@ console.log('All logic tests passed.');
   console.log(`rankings computed in ${Date.now() - t0} ms; champion ${nationalChampion(s)}, AP #1 ${rk.byWeek[99].ap.ranks[0]}`);
 }
 console.log('Rankings tests passed.');
+
+// --- 16-team playoff: every conference champion + BCS at-large
+{
+  const s = makeSeason(2004, 'CFP16');
+  playAll(s);
+  syncCCGs(s, computeRatings(s));
+  playAll(s, g => g.type === 'ccg');
+  const ratings = computeRatings(s);
+  const { allChampions } = await import('../js/standings.js');
+  const champs = Object.values(allChampions(s, ratings)).filter(Boolean);
+  // Make one champion a weak team so it must get in on the automatic bid.
+  const field = selectField(s, ratings);
+  assert.equal(field.seeds.length, 16);
+  assert.equal(new Set(field.seeds).size, 16);
+  for (const c of champs) assert.ok(field.seeds.includes(c), `champion ${c} qualifies`);
+  const order = fullRanking(s, ratings);
+  const atLarge = field.seeds.filter(t => !champs.includes(t));
+  const bestNonChamps = order.filter(t => !champs.includes(t)).slice(0, 16 - champs.length);
+  assert.deepEqual([...atLarge].sort(), [...bestNonChamps].sort(), 'at-large = best non-champions');
+  assert.deepEqual(field.seeds, order.filter(t => field.seeds.includes(t)), 'seeded by BCS order');
+  const games = buildPlayoff(s, field.seeds);
+  assert.equal(games.length, 15);
+  const r1 = games.filter(g => g.round === 'first_round');
+  assert.deepEqual([r1[0].home, r1[0].away], [field.seeds[0], field.seeds[15]]);
+  assert.ok(r1.every(g => !g.neutral), 'first round on campus');
+  for (const round of ['first_round', 'quarterfinal', 'semifinal', 'final']) {
+    resolveBracket(s);
+    assert.ok(s.games.filter(g => g.round === round).every(g => g.home && g.away), `${round} filled`);
+    playAll(s, g => g.round === round);
+  }
+  buildBowls(s, ratings);
+  const bowlTeams = s.games.filter(g => g.type === 'bowl').flatMap(g => [g.home, g.away]);
+  assert.ok(!bowlTeams.some(t => field.seeds.includes(t)));
+  assert.ok(!s.games.filter(g => g.type === 'bowl').some(g => /Rose|Sugar|Orange|Fiesta|Cotton|Peach/.test(g.name)), 'playoff sites not reused as bowls');
+  console.log(`16-team: ${champs.length} champions + ${atLarge.length} at-large; champion ${nationalChampion(s)}`);
+}
+console.log('16-team playoff tests passed.');

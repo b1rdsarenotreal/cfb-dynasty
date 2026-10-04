@@ -16,7 +16,9 @@ It is a static site with no build step and no server, so it runs on GitHub Pages
   - Last season's final AP poll carries into the next preseason polls.
 - **Team profiles**: click any team name for its page: record, conference finish, rating, scoring, the season schedule with results and win chances, poll history, and its whole dynasty record (final ranks, conference titles, bowls, national titles). You can also edit its colors, logo, conference and strength there.
 - **Logos**: pulled from [this college football logo list](https://gist.github.com/saiemgilani/c6596f0e1c8b148daabc2b7f1e6f6add), which points to ESPN's logo images, and cached in your browser. Teams it doesn't cover fall back to the logo CFBD supplies. Any team's logo can be replaced with your own image URL on its profile.
-- **Postseason**: every season ends in a **4-team playoff** of the BCS top 4 (1 vs 4 and 2 vs 3 in rotating major bowls, then a national championship). Everyone else bowl-eligible is placed into bowls by BCS ranking. A one-game BCS title game or a 12-team playoff can still be chosen for any season in Settings.
+- **Postseason**: the dynasty's first season ends in a **4-team playoff** of the BCS top 4. Every season after that uses a **16-team playoff**: every conference champion qualifies automatically, the highest-ranked non-champions in the BCS standings fill the remaining spots, and all 16 are seeded by BCS rank (1 vs 16, 8 vs 9 and so on). First-round games are at the higher seed's stadium, the quarterfinals are at the Rose, Sugar, Orange and Fiesta Bowls, and the semifinals are at the Cotton and Peach. Everyone else bowl-eligible goes to bowls by BCS ranking. The format for future seasons and for any single season can be changed in Settings.
+- **Conferences**: a page for each conference with its standings, champion and title-game result, non-conference and bowl records, ranked teams, average rating, and its champions in every season of the dynasty. Each conference can have its own logo: paste an image link on its page and it's used everywhere for every season. Known conferences start with ESPN's logo; others show their initials until you add one.
+- **Records**: an all-time record book across every season: an all-time standings table (wins, national and conference titles, playoff trips, bowl record, weeks at #1, final top-25 finishes), single-season and single-game records, the longest and active winning streaks, and the biggest upsets by AP ranking.
 - **Bowls**: auto-filled from your rankings for bowl-eligible teams (6+ wins), avoiding conference rematches. Every matchup and bowl name stays editable.
 - **Future seasons**: when CFBD has no data for a year, the next season copies the current teams and conferences and flips home and away on last year's schedule. You can realign conferences, add or remove teams, and nudge ratings on the Teams page.
 - **History**: champions, final top 5 and conference champions for every season.
@@ -66,6 +68,7 @@ js/ratings.js       offense/defense rating solver
 js/sim.js           quarter-by-quarter game simulator
 js/standings.js     records, standings, tiebreakers, champions
 js/rankings.js      generated AP, Coaches, computer and BCS rankings
+js/records.js       dynasty record book
 js/polls.js         résumé scoring helpers
 js/postseason.js    title games, BCS/CFP selection, brackets, bowls
 js/eras.js          era defaults (formats, title-game years, bowls)

@@ -2,10 +2,11 @@ import { loadLeague, saveLeague, clearLeague, getApiKey, setApiKey, exportLeague
 import { importSeason, nextSeason, computeRatings, SCHEMA_VERSION, newSeasonShell } from './league.js';
 import { loadLogoTable, logoFor } from './logos.js';
 import { simulateGame, winProbability, expectedScores } from './sim.js';
-import { standings, records, hasCCG, conferenceChampion, conferences, winnerOf, INDEPENDENT } from './standings.js';
+import { standings, records, hasCCG, conferenceChampion, allChampions, conferences, winnerOf, INDEPENDENT } from './standings.js';
 import { seasonRankings, displayRanks, officialOrder, rankHistory, finalPoll, pollWeeks, COMPUTERS, BCS_FIRST_WEEK, AP_VOTERS, COACHES_VOTERS } from './rankings.js';
 import { syncCCGs, selectField, buildPlayoff, buildBowls, resolveBracket, nationalChampion, blankGame, bowlEligible, lastRegularWeek, fullRanking } from './postseason.js';
-import { FORMATS, defaultHasCCG } from './eras.js';
+import { FORMATS, FUTURE_FORMAT, defaultHasCCG } from './eras.js';
+import { computeRecords } from './records.js';
 import { rating, FCS } from './ratings.js';
 
 // ---------------- State ----------------
@@ -44,12 +45,19 @@ function logoImg(name, t, size = 18) {
   return `<picture class="logo" style="width:${size}px;height:${size}px;--c:${esc(color)}"><source media="(prefers-color-scheme: dark)" srcset="${esc(lg.dark)}"><img src="${esc(lg.light)}" alt="" width="${size}" height="${size}" loading="lazy" onerror="this.parentNode.classList.add('broken')"></picture>`;
 }
 const teamHref = name => `#/team/${encodeURIComponent(name)}`;
+// Team info from the season being viewed, or the most recent season it was FBS.
+function teamInfo(name) {
+  if (S().teams[name]) return S().teams[name];
+  const ys = Object.keys(league.seasons).map(Number).sort((a, b) => b - a);
+  for (const y of ys) if (league.seasons[y].teams[name]) return league.seasons[y].teams[name];
+  return null;
+}
 function team(name, { rank = true, record = false, seed = null, link = true, size = 18 } = {}) {
   if (!name) return '<span class="muted">TBD</span>';
-  const t = S().teams[name];
+  const t = teamInfo(name);
   const r = seed ? `<span class="rank" title="Seed">(${seed})</span>` : rank && _ranks[name] ? `<span class="rank">${_ranks[name]}</span>` : '';
   let rec = '';
-  if (record && t) { const x = records(S())[name]; rec = ` <span class="muted small">${x.w}-${x.l}</span>`; }
+  if (record && S().teams[name]) { const x = records(S())[name]; rec = ` <span class="muted small">${x.w}-${x.l}</span>`; }
   const label = t && link ? `<a class="team-link" href="${teamHref(name)}">${esc(name)}</a>` : esc(name);
   return `<span class="team">${logoImg(name, t, size)}${r}${label}${t ? '' : ' <span class="muted small">(FCS)</span>'}${rec}</span>`;
 }
@@ -58,8 +66,9 @@ function teamOptions(selected, { blank = true, list = teamNames() } = {}) {
 }
 
 // ---------------- Routing ----------------
-const VIEWS = { schedule: 'Schedule', standings: 'Standings', polls: 'Polls', postseason: 'Postseason', teams: 'Teams', history: 'History', settings: 'Settings' };
-function currentView() { const v = location.hash.replace(/^#\/?/, '').split('/')[0]; return VIEWS[v] || v === 'team' ? v : 'schedule'; }
+const VIEWS = { schedule: 'Schedule', standings: 'Standings', polls: 'Polls', postseason: 'Postseason', teams: 'Teams', conferences: 'Conferences', records: 'Records', history: 'History', settings: 'Settings' };
+const SUBVIEWS = { team: 'teams', conference: 'conferences' };
+function currentView() { const v = location.hash.replace(/^#\/?/, '').split('/')[0]; return VIEWS[v] || SUBVIEWS[v] ? v : 'schedule'; }
 function routeArg() { return decodeURIComponent(location.hash.replace(/^#\/?/, '').split('/').slice(1).join('/')); }
 window.addEventListener('hashchange', render);
 
@@ -68,7 +77,7 @@ function renderChrome() {
   const nav = document.getElementById('nav'), picker = document.getElementById('season-picker');
   if (!league) { nav.innerHTML = ''; picker.innerHTML = ''; return; }
   const v = currentView();
-  nav.innerHTML = Object.entries(VIEWS).map(([k, label]) => `<a href="#/${k}" class="${k === v || (v === 'team' && k === 'teams') ? 'active' : ''}">${label}</a>`).join('');
+  nav.innerHTML = Object.entries(VIEWS).map(([k, label]) => `<a href="#/${k}" class="${k === v || SUBVIEWS[v] === k ? 'active' : ''}">${label}</a>`).join('');
   const years = Object.keys(league.seasons).map(Number).sort((a, b) => b - a);
   picker.innerHTML = `<select id="year-select" aria-label="Season">${years.map(y => `<option value="${y}" ${y === league.viewYear ? 'selected' : ''}>${y}${y === league.currentYear ? '' : ' (past)'}</option>`).join('')}</select>`;
   picker.querySelector('select').onchange = e => { league.viewYear = Number(e.target.value); ui.week = null; ui.pollWeek = null; ui.seedDraft = null; ratingsCache = null; persist(); render(); };
@@ -78,8 +87,8 @@ function render() {
   renderChrome();
   if (!league) return renderSetup();
   _ranks = rankMap();
-  ({ schedule: renderSchedule, standings: renderStandings, polls: renderPolls, postseason: renderPostseason, teams: renderTeams, history: renderHistory, settings: renderSettings, team: renderTeamPage })[currentView()]();
-  if (currentView() === 'team') window.scrollTo(0, 0);
+  ({ schedule: renderSchedule, standings: renderStandings, polls: renderPolls, postseason: renderPostseason, teams: renderTeams, history: renderHistory, settings: renderSettings, team: renderTeamPage, conferences: renderConferences, conference: renderConferencePage, records: renderRecords })[currentView()]();
+  if (SUBVIEWS[currentView()]) window.scrollTo(0, 0);
 }
 
 // ---------------- Setup ----------------
@@ -107,7 +116,7 @@ function renderSetup() {
     btn.disabled = true;
     try {
       const season = await importSeason(year, key, { onProgress: m => (prog.textContent += m + '\n') });
-      league = { schemaVersion: SCHEMA_VERSION, name, startYear: year, currentYear: year, viewYear: year, seasons: { [year]: season }, cfp4Migrated: true };
+      league = { schemaVersion: SCHEMA_VERSION, name, startYear: year, currentYear: year, viewYear: year, seasons: { [year]: season }, cfp4Migrated: true, cfp16Migrated: true, futureFormat: FUTURE_FORMAT };
       await saveLeague(league);
       location.hash = '#/schedule';
       toast(`${year} season loaded: ${Object.keys(season.teams).length} teams, ${season.games.length} games.`);
@@ -346,7 +355,7 @@ function renderStandings() {
         <span class="spacer"></span>
         <label class="row" style="gap:6px">Champion <select data-champ="${esc(c.conf)}"><option value="">Automatic${override ? '' : champ ? ` (${esc(champ)})` : hasCCG(s, c.conf) ? ' (decided by title game)' : ' (after conference play)'}</option>${members.map(t => `<option ${t === override ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
       </div>`;
-    return `<div class="card"><h2>${esc(c.conf)}</h2><div class="table-wrap">${tables}</div>${controls}</div>`;
+    return `<div class="card"><h2 class="row" style="gap:10px">${confLogo(c.conf, 28)}<a class="team-link" href="${confHref(c.conf)}">${esc(c.conf)}</a></h2><div class="table-wrap">${tables}</div>${controls}</div>`;
   };
   app.innerHTML = `
     <div class="section-head"><h1>${s.year} Standings</h1>
@@ -488,14 +497,15 @@ function renderPostseason() {
       if (!ui.seedDraft || ui.seedDraft.year !== s.year) ui.seedDraft = { year: s.year, seeds: s.playoffSeeds ? [...s.playoffSeeds] : null };
       const off = officialOrder(s, ratings);
       const seeds = ui.seedDraft.seeds;
+      const champSet = new Set(Object.values(allChampions(s, ratings)).filter(Boolean));
       const rounds = ['first_round', 'quarterfinal', 'semifinal', 'final'].map(r => [r, playoff.filter(g => g.round === r)]).filter(([, gs]) => gs.length);
       const roundName = { first_round: 'First round', quarterfinal: 'Quarterfinals', semifinal: 'Semifinals', final: 'Championship' };
       body = `
         <div class="card">
           <div class="row" style="margin-bottom:8px"><h2 style="margin:0">${esc(FORMATS[s.settings.format])}</h2><span class="spacer"></span>
             <button class="btn" id="ps-propose">Propose field from rankings</button></div>
-          <p class="small muted">Based on the ${off.source === 'BCS' ? 'BCS standings' : 'AP poll (no BCS standings yet)'} after ${esc(pollLabel(off.week))}${s.settings.format === 'CFP12' ? ` · top 5 conference champions get automatic bids · ${s.settings.seedByChampions ? 'byes go to the top 4 champions (2024 rule)' : 'seeded straight by ranking (2025+ rule)'}` : ''}. Change any seed before building.</p>
-          ${seeds ? `<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;margin:10px 0">${seeds.map((t, i) => `<label class="row" style="gap:6px"><span class="seedno">${i + 1}</span><select data-seed="${i}" style="flex:1">${teamOptions(t)}</select></label>`).join('')}</div>
+          <p class="small muted">Based on the ${off.source === 'BCS' ? 'BCS standings' : 'AP poll (no BCS standings yet)'} after ${esc(pollLabel(off.week))}${s.settings.format === 'CFP16' ? ' · every conference champion qualifies, the highest-ranked non-champions fill the other spots, and all 16 are seeded by BCS rank · first-round games are at the higher seed' : ''}${s.settings.format === 'CFP12' ? ` · top 5 conference champions get automatic bids · ${s.settings.seedByChampions ? 'byes go to the top 4 champions (2024 rule)' : 'seeded straight by ranking (2025+ rule)'}` : ''}. Change any seed before building.</p>
+          ${seeds ? `<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;margin:10px 0">${seeds.map((t, i) => `<label class="row" style="gap:6px"><span class="seedno">${i + 1}</span><select data-seed="${i}" style="flex:1">${teamOptions(t)}</select>${champSet.has(t) ? '<span class="badge gold" title="Conference champion (automatic bid)">Champ</span>' : (s.settings.format === 'CFP16' ? '<span class="badge" title="At-large pick from the BCS standings">At-large</span>' : '')}</label>`).join('')}</div>
             <div class="row"><button class="btn primary" id="ps-build" ${anyFinal ? 'disabled title="Clear playoff results first"' : ''}>${playoff.length ? 'Rebuild bracket' : 'Lock field & build bracket'}</button>${anyFinal ? '<span class="small muted">Bracket has results; clear them to rebuild.</span>' : ''}</div>` : ''}
         </div>
         ${rounds.length ? `<div class="card"><h2>Bracket</h2><div class="bracket">${rounds.map(([r, gs]) => `<div class="round"><h3>${roundName[r]}</h3>${gs.map(gameCard).join('')}</div>`).join('')}</div></div>` : ''}`;
@@ -558,6 +568,7 @@ async function startNextSeason() {
   try {
     const next = await nextSeason(s, getApiKey(), { onProgress: m => ($('#ns-prog').textContent += m + '\n') });
     next.preseasonCarry = finalPoll(s).ranks; // last year's final AP poll shapes the new preseason polls
+    next.settings.format = league.futureFormat || FUTURE_FORMAT;
     league.seasons[next.year] = next; league.currentYear = league.viewYear = next.year;
     ui.week = null; ui.pollWeek = null; ui.seedDraft = null; ui.post = 'ccg';
     ratingsCache = null; await saveLeague(league);
@@ -665,7 +676,7 @@ function renderTeamPage() {
     <div class="team-hero" style="--tc:${esc(t.color || '#333')};--ta:${esc(t.altColor || '#fff')}">
       <div class="team-hero-logo">${lg ? `<img src="${esc(lg.dark)}" alt="${esc(name)} logo" onerror="this.style.display='none'">` : ''}</div>
       <div>
-        <div class="team-hero-sub">${esc(t.conference)}${t.division ? ' · ' + esc(t.division) : ''} · ${s.year}</div>
+        <div class="team-hero-sub"><a href="${confHref(t.conference)}" style="color:inherit">${esc(t.conference)}</a>${t.division ? ' · ' + esc(t.division) : ''} · ${s.year}</div>
         <div class="team-hero-name">${_ranks[name] ? `<span class="team-hero-rank">#${_ranks[name]}</span> ` : ''}${esc(name)}</div>
         <div class="team-hero-sub">${esc(t.mascot || '')}</div>
       </div>
@@ -732,6 +743,195 @@ function renderTeamPage() {
   $('#tp-adj').onchange = save(() => { const v = Number($('#tp-adj').value) || 0; if (v) s.adjustments[name] = v; else delete s.adjustments[name]; }, 'Adjustment saved.');
 }
 
+// ---------------- Conferences ----------------
+// Default conference logos use ESPN's conference logo images where the id is
+// known. Any of them can be replaced (or added) on the conference's page.
+const ESPN_CONF_IDS = { 'ACC': 1, 'Big 12': 4, 'Big Ten': 5, 'SEC': 8, 'Pac-10': 9, 'Pac-12': 9, 'Conference USA': 12, 'Mid-American': 15, 'Mountain West': 17, 'Sun Belt': 37, 'American Athletic': 151 };
+const confHref = c => `#/conference/${encodeURIComponent(c)}`;
+function confLogoUrl(c) {
+  const custom = league.conferenceLogos?.[c];
+  if (custom) return custom;
+  const id = ESPN_CONF_IDS[c];
+  return id ? `https://a.espncdn.com/i/teamlogos/ncaa_conf/500/${id}.png` : null;
+}
+function confInitials(c) { return c.replace(/[^A-Za-z0-9 -]/g, '').split(/[\s-]+/).filter(Boolean).map(w => (/^\d+$/.test(w) ? w : w[0])).join('').slice(0, 4).toUpperCase(); }
+function confLogo(c, size = 24) {
+  const url = confLogoUrl(c);
+  const badge = `<span class="conf-badge" style="width:${size}px;height:${size}px;font-size:${Math.max(8, Math.round(size / 3.2))}px">${esc(confInitials(c))}</span>`;
+  if (!url) return badge;
+  return `<span class="conf-logo" style="width:${size}px;height:${size}px"><img src="${esc(url)}" alt="" loading="lazy" onerror="this.parentNode.classList.add('broken')">${badge}</span>`;
+}
+
+function confSeasonSummary(s, conf, ratings) {
+  const members = Object.keys(s.teams).filter(t => s.teams[t].conference === conf);
+  const set = new Set(members);
+  const nonConf = { w: 0, l: 0 }, post = { w: 0, l: 0 };
+  for (const g of s.games) {
+    if (!g.final) continue;
+    const w = winnerOf(g), l = w === g.home ? g.away : g.home;
+    const inW = set.has(w), inL = set.has(l);
+    if (inW === inL) continue; // same conference or neither
+    if (g.type === 'bowl' || g.type === 'playoff') { inW ? post.w++ : post.l++; }
+    else if (g.type === 'regular') { inW ? nonConf.w++ : nonConf.l++; }
+  }
+  const champ = conf !== INDEPENDENT ? conferenceChampion(s, conf, ratings) : null;
+  const ccg = s.games.find(g => g.type === 'ccg' && g.conference === conf);
+  const avgRating = ratings ? members.reduce((a, t) => a + rating(ratings, t).rating, 0) / (members.length || 1) : 0;
+  return { members, nonConf, post, champ, ccg, avgRating, playoff: (s.playoffSeeds || []).filter(t => set.has(t)) };
+}
+
+function renderConferences() {
+  const s = S(), ratings = R();
+  const ranks = displayRanks(s);
+  const confs = Object.keys(conferences(s)).map(c => ({ c, ...confSeasonSummary(s, c, ratings) }))
+    .sort((a, b) => (a.c === INDEPENDENT) - (b.c === INDEPENDENT) || b.avgRating - a.avgRating);
+  app.innerHTML = `
+    <div class="section-head"><h1>${s.year} Conferences</h1><span class="muted">Ordered by average team rating. Click a conference for its page.</span></div>
+    <div class="grid">${confs.map(x => {
+      const ranked = x.members.filter(t => ranks.ranks[t]).sort((a, b) => ranks.ranks[a] - ranks.ranks[b]);
+      return `<a class="card conf-card" href="${confHref(x.c)}">
+        <div class="row" style="gap:12px">${confLogo(x.c, 44)}<div><h2 style="margin:0">${esc(x.c)}</h2><div class="small muted">${x.members.length} teams · avg rating ${x.avgRating >= 0 ? '+' : ''}${x.avgRating.toFixed(1)}</div></div></div>
+        <div class="small" style="margin-top:10px">${x.champ ? `Champion: <b>${esc(x.champ)}</b>` : x.c === INDEPENDENT ? '<span class="muted">No conference champion</span>' : '<span class="muted">Champion not decided yet</span>'}</div>
+        <div class="small muted">Non-conference ${x.nonConf.w}-${x.nonConf.l}${x.post.w + x.post.l ? ` · Postseason ${x.post.w}-${x.post.l}` : ''}${ranked.length ? ` · ${ranked.length} ranked (${ranks.source})` : ''}</div>
+      </a>`;
+    }).join('')}</div>`;
+}
+
+function renderConferencePage() {
+  const s = S(), ratings = R(), conf = routeArg();
+  const exists = Object.values(s.teams).some(t => t.conference === conf);
+  const years = Object.keys(league.seasons).map(Number).sort((a, b) => b - a);
+  const logoUrl = league.conferenceLogos?.[conf] || '';
+  if (!exists) {
+    const had = years.filter(y => Object.values(league.seasons[y].teams).some(t => t.conference === conf));
+    app.innerHTML = `<div class="empty"><h2>${esc(conf)}</h2><p>Not an FBS conference in ${s.year}.</p>${had.length ? `<p>Seasons on record: ${had.map(y => `<button class="btn sm" data-yr="${y}">${y}</button>`).join(' ')}</p>` : ''}<p><a href="#/conferences">All conferences</a></p></div>`;
+    $$('[data-yr]').forEach(b => (b.onclick = () => { league.viewYear = Number(b.dataset.yr); ratingsCache = null; render(); }));
+    return;
+  }
+  const sum = confSeasonSummary(s, conf, ratings);
+  const { rec, table } = standings(s, ratings);
+  const c = table.find(x => x.conf === conf);
+  const ranks = displayRanks(s).ranks;
+  const isIndy = conf === INDEPENDENT;
+  const standingsHtml = c.divisions.map(d => `
+    ${d.name ? `<h3 class="muted" style="margin:12px 0 4px">${esc(d.name)}</h3>` : ''}
+    <table><thead><tr><th>Team</th>${isIndy ? '' : '<th class="num">Conf</th>'}<th class="num">Overall</th><th class="num">PF</th><th class="num">PA</th><th class="num">Rating</th></tr></thead><tbody>
+    ${d.teams.map(t => `<tr><td>${team(t)} ${t === sum.champ ? '<span class="badge gold">Champ</span>' : ''}${sum.playoff.includes(t) ? ' <span class="badge">Playoff</span>' : ''}</td>${isIndy ? '' : `<td class="num">${rec[t].cw}-${rec[t].cl}</td>`}<td class="num">${rec[t].w}-${rec[t].l}</td><td class="num">${rec[t].pf}</td><td class="num">${rec[t].pa}</td><td class="num">${rating(ratings, t).rating.toFixed(1)}</td></tr>`).join('')}
+    </tbody></table>`).join('');
+  // Champions and postseason by season, across the dynasty.
+  const history = years.map(y => {
+    const ss = league.seasons[y];
+    if (!Object.values(ss.teams).some(t => t.conference === conf)) return null;
+    const x = confSeasonSummary(ss, conf, null);
+    const nc = nationalChampion(ss);
+    return { y, ...x, natty: nc && ss.teams[nc]?.conference === conf ? nc : null };
+  }).filter(Boolean);
+  const ccgLine = sum.ccg ? (sum.ccg.final
+    ? `${esc(winnerOf(sum.ccg))} ${Math.max(sum.ccg.homeScore, sum.ccg.awayScore)}, ${esc(winnerOf(sum.ccg) === sum.ccg.home ? sum.ccg.away : sum.ccg.home)} ${Math.min(sum.ccg.homeScore, sum.ccg.awayScore)}`
+    : `${esc(sum.ccg.away)} vs ${esc(sum.ccg.home)} (not played yet)`) : null;
+  const postGames = s.games.filter(g => (g.type === 'bowl' || g.type === 'playoff') && (sum.members.includes(g.home) || sum.members.includes(g.away)));
+
+  app.innerHTML = `
+    <div class="conf-hero">
+      <div class="conf-hero-logo">${confLogo(conf, 76)}</div>
+      <div><div class="team-hero-sub">${s.year} · ${sum.members.length} teams</div><div class="team-hero-name">${esc(conf)}</div></div>
+      <span class="spacer"></span><a class="btn" href="#/conferences">All conferences</a>
+    </div>
+    <div class="kpis">
+      <div class="kpi"><div class="v">${sum.champ ? esc(sum.champ) : '—'}</div><div class="l">${isIndy ? 'No champion' : 'Champion'}</div></div>
+      <div class="kpi"><div class="v">${sum.nonConf.w}-${sum.nonConf.l}</div><div class="l">Non-conference</div></div>
+      <div class="kpi"><div class="v">${sum.post.w}-${sum.post.l}</div><div class="l">Bowls & playoff</div></div>
+      <div class="kpi"><div class="v">${sum.members.filter(t => ranks[t]).length}</div><div class="l">Ranked teams</div></div>
+      <div class="kpi"><div class="v">${sum.avgRating >= 0 ? '+' : ''}${sum.avgRating.toFixed(1)}</div><div class="l">Average rating</div></div>
+    </div>
+    <div class="grid" style="grid-template-columns:minmax(0,3fr) minmax(260px,2fr)">
+      <div class="card"><h2>${s.year} standings</h2>${ccgLine ? `<p class="small" style="margin:0 0 8px"><span class="muted">Title game:</span> ${ccgLine}</p>` : ''}<div class="table-wrap">${standingsHtml}</div></div>
+      <div>
+        ${postGames.length ? `<div class="card"><h2>${s.year} postseason</h2><div class="games" style="grid-template-columns:1fr">${postGames.map(gameCard).join('')}</div></div>` : ''}
+        <div class="card"><h2>Champions</h2>
+          <table><thead><tr><th>Year</th><th>Champion</th><th class="num">Bowls</th><th>Notes</th></tr></thead><tbody>
+          ${history.map(h => `<tr><td><button class="btn sm ghost" data-yr="${h.y}">${h.y}</button></td><td>${h.champ ? team(h.champ, { rank: false }) : '<span class="muted">—</span>'}</td><td class="num">${h.post.w}-${h.post.l}</td><td class="small">${h.natty ? `🏆 ${esc(h.natty)} national champion` : ''}${h.playoff.length ? `${h.natty ? ' · ' : ''}${h.playoff.length} in playoff` : ''}</td></tr>`).join('')}
+          </tbody></table>
+        </div>
+        <div class="card">
+          <h2>Conference logo</h2>
+          <label class="field">Logo image URL ${logoUrl ? '' : `<span class="muted">(${confLogoUrl(conf) ? 'using the default' : 'none yet — showing initials'})</span>`}<input type="text" id="cf-logo" value="${esc(logoUrl)}" placeholder="https://… (.png, .svg, .jpg)"></label>
+          <div class="row" style="margin-top:8px">${confLogo(conf, 40)}<span class="spacer"></span>${logoUrl ? '<button class="btn sm" id="cf-logo-reset">Use default</button>' : ''}<button class="btn sm primary" id="cf-logo-save">Save logo</button></div>
+          <p class="small muted" style="margin-bottom:0">Saved for this conference in every season of the dynasty.</p>
+        </div>
+      </div>
+    </div>`;
+  bindGameCards();
+  $$('[data-yr]').forEach(b => (b.onclick = () => { league.viewYear = Number(b.dataset.yr); ui.week = null; ui.pollWeek = null; ui.seedDraft = null; ratingsCache = null; persist(); render(); }));
+  const saveLogo = v => { league.conferenceLogos ||= {}; if (v) league.conferenceLogos[conf] = v; else delete league.conferenceLogos[conf]; persist(); toast(v ? 'Conference logo saved.' : 'Using the default logo.'); render(); };
+  $('#cf-logo-save').onclick = () => saveLogo($('#cf-logo').value.trim());
+  $('#cf-logo').onkeydown = e => { if (e.key === 'Enter') saveLogo($('#cf-logo').value.trim()); };
+  if ($('#cf-logo-reset')) $('#cf-logo-reset').onclick = () => saveLogo('');
+}
+
+// ---------------- Records ----------------
+function renderRecords() {
+  const rec = computeRecords(league);
+  const tab = ui.recTab || 'alltime';
+  const tabs = [['alltime', 'All-time'], ['season', 'Single season'], ['game', 'Single game'], ['streaks', 'Streaks & upsets']];
+  const pct = (w, l) => (w + l ? (w / (w + l)).toFixed(3).replace(/^0/, '') : '—');
+  const gameLine = g => `${team(g.winner, { rank: false })} <b>${g.ws}</b>, ${team(g.loser, { rank: false })} ${g.ls}${g.ot ? ' (OT)' : ''}`;
+  const when = g => `${g.year} · ${g.week === 'post' ? esc((g.name || 'Postseason').replace(/^CFP |^BCS /, '')) : g.type === 'ccg' ? esc(g.name || 'Title game') : 'Week ' + g.week}`;
+  const gameTable = (rows, valHead, val) => rows.length ? `<table><thead><tr><th class="num">#</th><th>Game</th><th>When</th><th class="num">${valHead}</th></tr></thead><tbody>
+    ${rows.map((g, i) => `<tr><td class="num">${i + 1}</td><td>${gameLine(g)}</td><td class="small muted">${when(g)}</td><td class="num"><b>${val(g)}</b></td></tr>`).join('')}</tbody></table>` : '<p class="muted small">No games yet.</p>';
+  const seasonTable = (rows, valHead, val) => rows.length ? `<table><thead><tr><th class="num">#</th><th>Team</th><th>Year</th><th class="num">Record</th><th class="num">${valHead}</th></tr></thead><tbody>
+    ${rows.map((r, i) => `<tr><td class="num">${i + 1}</td><td>${team(r.team, { rank: false })}</td><td>${r.year}</td><td class="num">${r.w}-${r.l}</td><td class="num"><b>${val(r)}</b></td></tr>`).join('')}</tbody></table>` : '<p class="muted small">Not enough games yet.</p>';
+  let body = '';
+  if (tab === 'alltime') {
+    body = `<div class="card"><h2>All-time standings</h2><p class="small muted">Since ${rec.years[0]} · ${rec.years.length} season${rec.years.length > 1 ? 's' : ''} · click a column header to sort.</p>
+      <div class="table-wrap"><table id="alltime"><thead><tr><th class="num">#</th><th data-sort="team">Team</th><th class="num" data-sort="w">W</th><th class="num" data-sort="l">L</th><th class="num" data-sort="pct">Pct</th><th class="num" data-sort="natTitles">Natl titles</th><th class="num" data-sort="confTitles">Conf titles</th><th class="num" data-sort="playoffs">Playoffs</th><th class="num" data-sort="bowl">Bowl/playoff</th><th class="num" data-sort="weeksAt1">Weeks #1</th><th class="num" data-sort="top25">Final top 25</th><th class="num" data-sort="pf">PF</th><th class="num" data-sort="pa">PA</th></tr></thead><tbody>
+      ${sortAllTime(rec.allTime).map((r, i) => `<tr><td class="num muted">${i + 1}</td><td>${team(r.team, { rank: false })}</td><td class="num">${r.w}</td><td class="num">${r.l}</td><td class="num">${pct(r.w, r.l)}</td><td class="num">${r.natTitles || ''}</td><td class="num">${r.confTitles || ''}</td><td class="num">${r.playoffs || ''}</td><td class="num">${r.bowlW + r.bowlL ? `${r.bowlW}-${r.bowlL}` : ''}</td><td class="num">${r.weeksAt1 || ''}</td><td class="num">${r.top25 || ''}</td><td class="num">${r.pf}</td><td class="num">${r.pa}</td></tr>`).join('')}
+      </tbody></table></div></div>`;
+  } else if (tab === 'season') {
+    body = `<div class="grid">
+      <div class="card"><h2>Most wins</h2>${seasonTable(rec.season.wins, 'Wins', r => r.w)}</div>
+      <div class="card"><h2>Most points scored</h2>${seasonTable(rec.season.points, 'Points', r => r.pf)}</div>
+      <div class="card"><h2>Best scoring offense</h2>${seasonTable(rec.season.ppg, 'Pts/game', r => (r.pf / r.g).toFixed(1))}</div>
+      <div class="card"><h2>Best scoring defense</h2>${seasonTable(rec.season.defense, 'Allowed/game', r => (r.pa / r.g).toFixed(1))}</div>
+      <div class="card"><h2>Unbeaten seasons</h2>${seasonTable(rec.season.undefeated, 'Pts/game', r => (r.pf / r.g).toFixed(1))}</div>
+    </div>`;
+  } else if (tab === 'game') {
+    body = `<div class="grid">
+      <div class="card"><h2>Most points by a team</h2>${gameTable(rec.game.points, 'Points', g => g.ws)}</div>
+      <div class="card"><h2>Largest margin of victory</h2>${gameTable(rec.game.margin, 'Margin', g => g.margin)}</div>
+      <div class="card"><h2>Highest-scoring games</h2>${gameTable(rec.game.total, 'Total', g => g.total)}</div>
+    </div>`;
+  } else {
+    const streakTable = (rows, cur) => rows.length ? `<table><thead><tr><th class="num">#</th><th>Team</th><th class="num">Wins</th><th>${cur ? 'Since' : 'Seasons'}</th></tr></thead><tbody>
+      ${rows.map((r, i) => `<tr><td class="num">${i + 1}</td><td>${team(r.team, { rank: false })}</td><td class="num"><b>${cur ? r.cur : r.best}</b></td><td class="small muted">${cur ? r.curFrom : r.bestFrom === r.bestTo ? r.bestFrom : `${r.bestFrom}–${r.bestTo}`}</td></tr>`).join('')}</tbody></table>` : '<p class="muted small">No streaks yet.</p>';
+    const rk = n => (n ? `#${n}` : 'unranked');
+    body = `<div class="grid">
+      <div class="card"><h2>Longest winning streaks</h2>${streakTable(rec.streaks.longest, false)}</div>
+      <div class="card"><h2>Active winning streaks</h2>${streakTable(rec.streaks.active, true)}</div>
+      <div class="card" style="grid-column:1/-1"><h2>Biggest upsets</h2><p class="small muted">By AP ranking going into the game.</p>
+        ${rec.game.upsets.length ? `<table><thead><tr><th class="num">#</th><th>Game</th><th>Rankings</th><th>When</th></tr></thead><tbody>
+        ${rec.game.upsets.map((g, i) => `<tr><td class="num">${i + 1}</td><td>${gameLine(g)}</td><td class="small">${rk(g.rw)} beat ${rk(g.rl)}</td><td class="small muted">${when(g)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted small">No upsets of ranked teams yet.</p>'}
+      </div>
+    </div>`;
+  }
+  app.innerHTML = `
+    <div class="section-head"><h1>Record book</h1><span class="muted">${esc(league.name)} · every season since ${rec.years[0]}</span></div>
+    <div class="steps">${tabs.map(([k, l]) => `<a href="#/records" data-rtab="${k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</div>
+    ${body}`;
+  $$('[data-rtab]').forEach(a => (a.onclick = e => { e.preventDefault(); ui.recTab = a.dataset.rtab; renderRecords(); }));
+  $$('#alltime [data-sort]').forEach(th => { th.style.cursor = 'pointer'; th.onclick = () => { ui.recSort = ui.recSort === th.dataset.sort ? '-' + th.dataset.sort : th.dataset.sort; renderRecords(); }; });
+}
+function sortAllTime(rows) {
+  const key = (ui.recSort || 'w').replace(/^-/, ''), asc = (ui.recSort || '').startsWith('-');
+  const v = r => (key === 'pct' ? (r.w + r.l ? r.w / (r.w + r.l) : 0) : key === 'bowl' ? r.bowlW - r.bowlL / 100 : key === 'team' ? r.team : r[key]);
+  const sorted = [...rows].sort((a, b) => {
+    const x = v(a), y = v(b);
+    const c = typeof x === 'string' ? x.localeCompare(y) : y - x;
+    return c || b.w - a.w || a.l - b.l;
+  });
+  return key === 'team' ? (asc ? sorted.reverse() : sorted) : asc ? sorted.reverse() : sorted;
+}
+
 // ---------------- History ----------------
 function renderHistory() {
   const years = Object.keys(league.seasons).map(Number).sort((a, b) => b - a);
@@ -758,7 +958,8 @@ function renderSettings() {
     <div class="grid">
       <div class="card stack">
         <h2>${s.year} season rules</h2>
-        <label class="field">Postseason format <select id="st-format">${Object.entries(FORMATS).map(([k, v]) => `<option value="${k}" ${k === s.settings.format ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+        <label class="field">Playoff format for future seasons <select id="st-future">${Object.entries(FORMATS).map(([k, v]) => `<option value="${k}" ${k === (league.futureFormat || FUTURE_FORMAT) ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+        <label class="field">Postseason format this season (${s.year}) <select id="st-format">${Object.entries(FORMATS).map(([k, v]) => `<option value="${k}" ${k === s.settings.format ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
         <label class="check"><input type="checkbox" id="st-seedchamps" ${s.settings.seedByChampions ? 'checked' : ''}> 12-team: first-round byes go to the top 4 conference champions</label>
         <label class="check"><input type="checkbox" id="st-divs" ${s.settings.useDivisions ? 'checked' : ''}> Use divisions for standings and title-game matchups</label>
         <label class="field">Upsets in simulated games <select id="st-vol">${[[0.8, 'Fewer — favorites win more often'], [1, 'Realistic — a 7-point favorite wins about 72%'], [1.25, 'More — closer to coin flips'], [1.6, 'Chaos']].map(([v, l]) => `<option value="${v}" ${(s.settings.volatility ?? 1) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
@@ -778,6 +979,7 @@ function renderSettings() {
         <div class="row"><button class="btn danger" id="st-reset">Delete dynasty…</button></div>
       </div>
     </div>`;
+  $('#st-future').onchange = e => { league.futureFormat = e.target.value; persist(); toast('New seasons will use this playoff format.'); };
   $('#st-format').onchange = e => { s.settings.format = e.target.value; changed(); toast('Format updated. Rebuild the bracket on the Postseason page.'); };
   $('#st-seedchamps').onchange = e => { s.settings.seedByChampions = e.target.checked; changed(); };
   $('#st-divs').onchange = e => { s.settings.useDivisions = e.target.checked; changed(); };
@@ -808,6 +1010,14 @@ function renderSettings() {
         if (!season.games.some(g => g.type === 'playoff' || g.type === 'bowl')) season.settings.format = 'CFP4';
       }
       league.cfp4Migrated = true; persist();
+    }
+    // After the first season, the dynasty moved to a 16-team playoff.
+    if (!league.cfp16Migrated) {
+      league.futureFormat ||= FUTURE_FORMAT;
+      for (const season of Object.values(league.seasons)) {
+        if (season.year > league.startYear && !season.games.some(g => g.type === 'playoff' || g.type === 'bowl')) season.settings.format = league.futureFormat;
+      }
+      league.cfp16Migrated = true; persist();
     }
   }
   render();

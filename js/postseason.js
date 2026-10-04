@@ -52,6 +52,14 @@ export function selectField(season, ratings) {
   if (fmt === 'NONE') return { format: fmt, seeds: [] };
   if (fmt === 'BCS') return { format: fmt, seeds: order.slice(0, 2) };
   if (fmt === 'CFP4') return { format: fmt, seeds: order.slice(0, 4) };
+  if (fmt === 'CFP16') {
+    // Every conference champion is in; the best-ranked non-champions fill the
+    // rest of the 16 spots. Seeds then follow the BCS order.
+    const champs = new Set(Object.values(allChampions(season, ratings)).filter(Boolean));
+    const field = new Set([...champs].slice(0, 16));
+    for (const t of order) { if (field.size >= 16) break; if (!champs.has(t)) field.add(t); }
+    return { format: fmt, seeds: order.filter(t => field.has(t)), champions: [...champs] };
+  }
 
   // 12-team
   const champs = Object.values(allChampions(season, ratings)).filter(Boolean);
@@ -68,6 +76,8 @@ export function selectField(season, ratings) {
 const CFP4_SEMI_SITES = [['Rose Bowl', 'Sugar Bowl'], ['Orange Bowl', 'Cotton Bowl'], ['Peach Bowl', 'Fiesta Bowl']];
 const CFP12_QF_SITES = ['Fiesta Bowl', 'Peach Bowl', 'Rose Bowl', 'Sugar Bowl'];
 const CFP12_SF_SITES = ['Orange Bowl', 'Cotton Bowl'];
+const CFP16_QF_SITES = ['Rose Bowl', 'Sugar Bowl', 'Orange Bowl', 'Fiesta Bowl'];
+const CFP16_SF_SITES = ['Cotton Bowl', 'Peach Bowl'];
 
 function slotGame(season, round, name, homeSlot, awaySlot, neutral = true) {
   return blankGame(season, { type: 'playoff', round, name, neutral, week: 'post', homeSlot, awaySlot });
@@ -87,6 +97,14 @@ export function buildPlayoff(season, seeds) {
     const s1 = slotGame(season, 'semifinal', `National Semifinal — ${sites[0]}`, S(1), S(4));
     const s2 = slotGame(season, 'semifinal', `National Semifinal — ${sites[1]}`, S(2), S(3));
     games.push(s1, s2, slotGame(season, 'final', 'National Championship', W(s1), W(s2)));
+  } else if (fmt === 'CFP16') {
+    // First round on the higher seed's campus; bracket keeps 1 and 2 apart until the final.
+    const pairs = [[1, 16], [8, 9], [5, 12], [4, 13], [6, 11], [3, 14], [7, 10], [2, 15]];
+    const r1 = pairs.map(([a, b]) => slotGame(season, 'first_round', `Playoff First Round (${a} vs ${b})`, S(a), S(b), false));
+    const qf = [0, 1, 2, 3].map(i => slotGame(season, 'quarterfinal', `Playoff Quarterfinal — ${CFP16_QF_SITES[i]}`, W(r1[2 * i]), W(r1[2 * i + 1])));
+    const sf1 = slotGame(season, 'semifinal', `National Semifinal — ${CFP16_SF_SITES[0]}`, W(qf[0]), W(qf[1]));
+    const sf2 = slotGame(season, 'semifinal', `National Semifinal — ${CFP16_SF_SITES[1]}`, W(qf[2]), W(qf[3]));
+    games.push(...r1, ...qf, sf1, sf2, slotGame(season, 'final', 'National Championship', W(sf1), W(sf2)));
   } else if (fmt === 'CFP12') {
     // First round at the higher seed's stadium.
     const r = [[8, 9], [5, 12], [7, 10], [6, 11]].map(([a, b]) =>

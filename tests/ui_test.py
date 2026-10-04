@@ -242,7 +242,7 @@ def main():
 
             # Team profile
             page.click("a[href='#/standings']")
-            page.click(".card a.team-link")
+            page.click(".card td a.team-link >> nth=0")
             page.wait_for_selector(".team-hero")
             assert page.query_selector_all("tr[data-game]"), "profile schedule rows"
             page.screenshot(path=f"{OUT}/05b-team.png", full_page=True)
@@ -303,7 +303,7 @@ def main():
             page.click("a[href='#/teams']")
             page.screenshot(path=f"{OUT}/09-teams.png")
             page.click("a[href='#/settings']")
-            page.select_option("#st-format", "CFP12")
+            assert page.evaluate("cfb.league.seasons[1999].settings.format") == "CFP16", "season 2 uses the 16-team playoff"
             page.select_option("#st-vol", "0.8")
             assert page.evaluate("cfb.league.seasons[1999].settings.volatility") == 0.8
             page.screenshot(path=f"{OUT}/10-settings.png")
@@ -312,7 +312,7 @@ def main():
             page.wait_for_timeout(500)
             page.reload()
             page.wait_for_selector("#year-select")
-            assert page.evaluate("cfb.league.seasons[1999].settings.format") == "CFP12"
+            assert page.evaluate("cfb.league.seasons[1999].settings.format") == "CFP16"
 
             # 12-team bracket on 1999 after simming everything
             page.click("a[href='#/schedule']")
@@ -321,14 +321,52 @@ def main():
             page.click("#ps-ccg"); page.wait_for_timeout(100)
             page.click("a[href='#/schedule']"); page.click("#w-sim"); page.wait_for_timeout(100)
             page.click("a[href='#/postseason']"); page.click("[data-step='field']")
-            page.click("#ps-propose"); page.click("#ps-build"); page.wait_for_timeout(200)
+            page.click("#ps-propose")
+            seeds99 = page.evaluate("[...document.querySelectorAll('[data-seed]')].map(s=>s.value)")
+            assert len(seeds99) == 16, len(seeds99)
+            champs99 = page.evaluate("(() => { const s = cfb.league.seasons[1999]; return [...new Set(s.games.filter(g=>g.type==='ccg'&&g.final).map(g=>g.homeScore>g.awayScore?g.home:g.away))] })()")
+            for c in champs99: assert c in seeds99, ("title-game winner missing from field", c)
+            print("1999 field: %d seeds, %d title-game champions, %d champ badges" % (len(seeds99), len(champs99), page.locator(".badge.gold", has_text="Champ").count()))
+            page.click("#ps-build"); page.wait_for_timeout(200)
+            assert page.evaluate("cfb.league.seasons[1999].games.filter(g=>g.type==='playoff').length") == 15
             page.screenshot(path=f"{OUT}/11-bracket.png", full_page=True)
-            for _ in range(4):
-                page.click("a[href='#/schedule']"); page.click("[data-week='post']")
-                page.click("#w-sim"); page.wait_for_timeout(150)
+            for _ in range(5):
+                page.evaluate("location.hash='#/schedule'"); page.wait_for_selector(".chips")
+                page.click("[data-week='post']")
+                if page.locator("#w-sim").count(): page.click("#w-sim"); page.wait_for_timeout(150)
             champ = page.evaluate("(() => { const s = cfb.league.seasons[1999]; const f = s.games.find(g=>g.round==='final'); return f && f.final ? (f.homeScore>f.awayScore?f.home:f.away) : null })()")
-            print("1999 12-team champion:", champ)
+            print("1999 16-team champion:", champ)
             assert champ
+
+            # Records page
+            page.click("a[href='#/records']")
+            page.wait_for_selector("#alltime")
+            assert page.locator("#alltime tbody tr").count() > 50
+            page.click("#alltime [data-sort='natTitles']")
+            top_nat = page.evaluate("document.querySelector('#alltime tbody tr td:nth-child(6)').textContent")
+            assert top_nat in ("1", "2"), top_nat
+            page.screenshot(path=f"{OUT}/13-records.png")
+            for tb in ("season", "game", "streaks"):
+                page.click(f"[data-rtab='{tb}']"); page.wait_for_selector(".card table")
+            page.screenshot(path=f"{OUT}/13b-records-streaks.png", full_page=True)
+
+            # Conferences index and page, with a custom logo
+            page.click("a[href='#/conferences']")
+            page.wait_for_selector(".conf-card")
+            page.screenshot(path=f"{OUT}/14-conferences.png")
+            page.click(".conf-card >> nth=0")
+            page.wait_for_selector(".conf-hero")
+            cname = page.evaluate("decodeURIComponent(location.hash.split('/')[2])")
+            page.fill("#cf-logo", "https://example.com/my-conf-logo.png")
+            page.route("https://example.com/**", lambda r: r.fulfill(status=200, content_type="image/svg+xml", body=LOGO_SVG))
+            page.click("#cf-logo-save"); page.wait_for_timeout(150)
+            assert page.evaluate(f"cfb.league.conferenceLogos[{json.dumps(cname)}]") == "https://example.com/my-conf-logo.png"
+            assert page.get_attribute(".conf-hero-logo img", "src") == "https://example.com/my-conf-logo.png"
+            page.screenshot(path=f"{OUT}/15-conference.png", full_page=True)
+            # Conference name on standings links to its page
+            page.click("a[href='#/standings']")
+            page.click(".card h2 a.team-link >> nth=0")
+            page.wait_for_selector(".conf-hero")
 
             # Mobile layout check
             page.set_viewport_size({"width": 390, "height": 844})
