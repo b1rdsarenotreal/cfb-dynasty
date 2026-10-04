@@ -40,10 +40,51 @@ function rankMap() { return displayRanks(S()).ranks; }
 let _ranks = {};
 function logoImg(name, t, size = 18) {
   const color = t ? t.color : '#999';
-  const lg = t ? logoFor(name, t) : null;
+  const lg = t ? teamLogo(name, t) : null;
   if (!lg) return `<span class="dot" style="background:${esc(color)}"></span>`;
   return `<picture class="logo" style="width:${size}px;height:${size}px;--c:${esc(color)}"><source media="(prefers-color-scheme: dark)" srcset="${esc(lg.dark)}"><img src="${esc(lg.light)}" alt="" width="${size}" height="${size}" loading="lazy" onerror="this.parentNode.classList.add('broken')"></picture>`;
 }
+// Read an image file the user picked and shrink it to at most `max` pixels,
+// returned as a data URL stored with the dynasty (no outside host needed).
+function imageFileToDataUrl(file, max = 256) {
+  return new Promise((resolve, reject) => {
+    if (!file || !/^image\//.test(file.type)) return reject(new Error('Pick an image file (PNG, JPG, SVG, GIF or WebP).'));
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read that file.'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('That file is not a readable image.'));
+      img.onload = () => {
+        const w = img.naturalWidth || max, h = img.naturalHeight || max;
+        const k = Math.min(1, max / Math.max(w, h));
+        const c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(w * k)); c.height = Math.max(1, Math.round(h * k));
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        resolve(c.toDataURL('image/png'));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+// Team logo overrides (a pasted link or an uploaded image) are kept once for
+// the whole dynasty, so they carry into every season.
+function teamLogoOverride(name) {
+  const fromLeague = league.teamLogos?.[name];
+  if (fromLeague) return fromLeague;
+  for (const y of Object.keys(league.seasons)) { const o = league.seasons[y].teams[name]?.logoOverride; if (o) return o; }
+  return null;
+}
+function setTeamLogo(name, url) {
+  league.teamLogos ||= {};
+  if (url) league.teamLogos[name] = url; else delete league.teamLogos[name];
+  for (const y of Object.keys(league.seasons)) { const t = league.seasons[y].teams[name]; if (t) delete t.logoOverride; }
+}
+function teamLogo(name, t) {
+  const o = teamLogoOverride(name);
+  return o ? { light: o, dark: o } : logoFor(name, t);
+}
+const isUpload = v => typeof v === 'string' && v.startsWith('data:');
 const teamHref = name => `#/team/${encodeURIComponent(name)}`;
 // Team info from the season being viewed, or the most recent season it was FBS.
 function teamInfo(name) {
@@ -663,7 +704,7 @@ function renderTeamPage() {
   const games = s.games.filter(g => g.home === name || g.away === name)
     .sort((a, b) => (a.week === 'post' ? 99 : a.week) - (b.week === 'post' ? 99 : b.week) || (a.type === 'playoff') - (b.type === 'playoff'));
   const played = rec.w + rec.l;
-  const lg = logoFor(name, t);
+  const lg = teamLogo(name, t);
   const history_ = rankHistory(s, name);
   const wkLabel = x => (x === 0 ? 'Pre' : x === 99 ? 'Final' : 'Wk ' + x);
 
@@ -740,7 +781,8 @@ function renderTeamPage() {
               <label class="field">Alt color <input type="color" id="tp-alt" value="${esc(/^#[0-9a-f]{6}$/i.test(t.altColor) ? t.altColor : '#ffffff')}"></label>
               <label class="field" style="flex:1">Mascot <input type="text" id="tp-mascot" value="${esc(t.mascot || '')}"></label>
             </div>
-            <label class="field">Logo URL (leave blank to use the logo list) <input type="text" id="tp-logo" value="${esc(t.logoOverride || '')}" placeholder="https://…"></label>
+            <label class="field">Logo URL (leave blank to use the logo list)${isUpload(teamLogoOverride(name)) ? ' <span class="muted">(using an uploaded image)</span>' : ''} <input type="text" id="tp-logo" value="${isUpload(teamLogoOverride(name)) ? '' : esc(teamLogoOverride(name) || '')}" placeholder="https://…"></label>
+            <div class="row"><label class="btn sm">Upload image… <input type="file" id="tp-logo-file" accept="image/*" hidden></label>${teamLogoOverride(name) ? '<button class="btn sm" id="tp-logo-reset">Use default logo</button>' : ''}</div>
             <label class="field">Strength adjustment (points) <input type="number" step="0.5" id="tp-adj" value="${s.adjustments[name] || 0}" style="width:100px"></label>
           </div>
         </div>
@@ -754,7 +796,9 @@ function renderTeamPage() {
   $('#tp-color').onchange = save(() => (t.color = $('#tp-color').value));
   $('#tp-alt').onchange = save(() => (t.altColor = $('#tp-alt').value));
   $('#tp-mascot').onchange = save(() => (t.mascot = $('#tp-mascot').value.trim()));
-  $('#tp-logo').onchange = save(() => { const v = $('#tp-logo').value.trim(); if (v) t.logoOverride = v; else delete t.logoOverride; }, 'Logo updated.');
+  $('#tp-logo').onchange = save(() => { const v = $('#tp-logo').value.trim(); if (v) setTeamLogo(name, v); else if (!isUpload(teamLogoOverride(name))) setTeamLogo(name, null); }, 'Logo updated.');
+  $('#tp-logo-file').onchange = async e => { try { const url = await imageFileToDataUrl(e.target.files[0]); setTeamLogo(name, url); changed(); toast('Logo updated.'); render(); } catch (err) { toast(err.message, true); } };
+  if ($('#tp-logo-reset')) $('#tp-logo-reset').onclick = () => { setTeamLogo(name, null); changed(); toast('Using the default logo.'); render(); };
   $('#tp-adj').onchange = save(() => { const v = Number($('#tp-adj').value) || 0; if (v) s.adjustments[name] = v; else delete s.adjustments[name]; }, 'Adjustment saved.');
 }
 
@@ -870,8 +914,11 @@ function renderConferencePage() {
         </div>
         <div class="card">
           <h2>Conference logo</h2>
-          <label class="field">Logo image URL ${logoUrl ? '' : `<span class="muted">(${confLogoUrl(conf) ? 'using the default' : 'none yet — showing initials'})</span>`}<input type="text" id="cf-logo" value="${esc(logoUrl)}" placeholder="https://… (.png, .svg, .jpg)"></label>
-          <div class="row" style="margin-top:8px">${confLogo(conf, 40)}<span class="spacer"></span>${logoUrl ? '<button class="btn sm" id="cf-logo-reset">Use default</button>' : ''}<button class="btn sm primary" id="cf-logo-save">Save logo</button></div>
+          <label class="field">Logo image URL ${logoUrl ? (isUpload(logoUrl) ? '<span class="muted">(using an uploaded image)</span>' : '') : `<span class="muted">(${confLogoUrl(conf) ? 'using the default' : 'none yet — showing initials'})</span>`}<input type="text" id="cf-logo" value="${isUpload(logoUrl) ? '' : esc(logoUrl)}" placeholder="https://… (.png, .svg, .jpg)"></label>
+          <div class="row" style="margin-top:8px">${confLogo(conf, 40)}<span class="spacer"></span>
+            <label class="btn sm">Upload image… <input type="file" id="cf-logo-file" accept="image/*" hidden></label>
+            ${logoUrl ? '<button class="btn sm" id="cf-logo-reset">Use default</button>' : ''}<button class="btn sm primary" id="cf-logo-save">Save link</button></div>
+          <p class="small muted" style="margin:8px 0 0">If a link shows only initials, that site is probably blocking its images from being shown elsewhere. Save the image to your computer and use <b>Upload image</b> instead.</p>
           <p class="small muted" style="margin-bottom:0">Saved for this conference in every season of the dynasty.</p>
         </div>
       </div>
@@ -882,6 +929,7 @@ function renderConferencePage() {
   $('#cf-logo-save').onclick = () => saveLogo($('#cf-logo').value.trim());
   $('#cf-logo').onkeydown = e => { if (e.key === 'Enter') saveLogo($('#cf-logo').value.trim()); };
   if ($('#cf-logo-reset')) $('#cf-logo-reset').onclick = () => saveLogo('');
+  $('#cf-logo-file').onchange = async e => { try { saveLogo(await imageFileToDataUrl(e.target.files[0])); } catch (err) { toast(err.message, true); } };
 }
 
 // ---------------- Records ----------------

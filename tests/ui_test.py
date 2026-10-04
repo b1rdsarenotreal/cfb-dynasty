@@ -249,6 +249,11 @@ def main():
             page.fill("#tp-mascot", "Testers"); page.press("#tp-mascot", "Tab"); page.wait_for_timeout(100)
             nm = page.evaluate("decodeURIComponent(location.hash.split('/')[2])")
             assert page.evaluate(f"cfb.league.seasons[1998].teams[{json.dumps(nm)}].mascot") == "Testers"
+            png2 = __import__("base64").b64decode("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP4z8DwnwEJAOWAATkBQgQBAFQuB/1ZqDgPAAAAAElFTkSuQmCC")
+            page.set_input_files("#tp-logo-file", {"name": "team.png", "mimeType": "image/png", "buffer": png2})
+            page.wait_for_function(f"((cfb.league.teamLogos||{{}})[{json.dumps(nm)}] || '').startsWith('data:image/png')", timeout=5000)
+            assert page.evaluate("document.querySelector('.team-hero-logo img').src.startsWith('data:image/png')")
+            team_logo_name = nm
 
             # 4-team playoff seeded from the final BCS standings
             page.click("a[href='#/polls']")
@@ -293,6 +298,8 @@ def main():
             page.click("#ps-next")
             page.wait_for_function("cfb.league.currentYear === 1999", timeout=20000); page.wait_for_selector(".game")
             assert page.evaluate("cfb.league.currentYear") == 1999
+            page.evaluate(f"location.hash = '#/team/' + encodeURIComponent({json.dumps(team_logo_name)})"); page.wait_for_selector(".team-hero")
+            assert page.evaluate("document.querySelector('.team-hero-logo img').src.startsWith('data:image/png')"), "uploaded team logo carries into the next season"
             prior = page.evaluate("Object.keys(cfb.league.seasons[1999].prior).length")
             assert prior > 50
 
@@ -376,6 +383,26 @@ def main():
             assert page.evaluate(f"cfb.league.conferenceLogos[{json.dumps(cname)}]") == "https://example.com/my-conf-logo.png"
             assert page.get_attribute(".conf-hero-logo img", "src") == "https://example.com/my-conf-logo.png"
             page.screenshot(path=f"{OUT}/15-conference.png", full_page=True)
+            # A logo host with hotlink protection (blocks requests that say which site embeds them)
+            assert page.get_attribute("meta[name=referrer]", "content") == "no-referrer"
+            seen_referers = []
+            def hotlink(route):
+                ref = route.request.headers.get("referer")
+                seen_referers.append(ref)
+                if ref: return route.fulfill(status=403, body="hotlinking not allowed")
+                route.fulfill(status=200, content_type="image/svg+xml", body=LOGO_SVG)
+            page.route("https://logos.hotlink-test.net/**", hotlink)
+            page.fill("#cf-logo", "https://logos.hotlink-test.net/pac10.png")
+            page.click("#cf-logo-save"); page.wait_for_timeout(400)
+            assert page.evaluate("(() => { const i = document.querySelector('.conf-hero-logo img'); return i && i.complete && i.naturalWidth > 0 })()"), ("blocked", seen_referers)
+            assert not any(seen_referers), seen_referers
+            # Uploading an image file instead of linking
+            import base64
+            png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP4z8DwnwEJAOWAATkBQgQBAFQuB/1ZqDgPAAAAAElFTkSuQmCC")
+            page.set_input_files("#cf-logo-file", {"name": "conf.png", "mimeType": "image/png", "buffer": png})
+            page.wait_for_function(f"(cfb.league.conferenceLogos[{json.dumps(cname)}] || '').startsWith('data:image/png')", timeout=5000)
+            assert page.evaluate("(() => { const i = document.querySelector('.conf-hero-logo img'); return i.src.startsWith('data:') && i.naturalWidth > 0 })()")
+            assert "using an uploaded image" in page.text_content("#app")
             # Conference name on standings links to its page
             page.click("a[href='#/standings']")
             page.click(".card h2 a.team-link >> nth=0")
