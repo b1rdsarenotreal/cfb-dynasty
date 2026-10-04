@@ -9,14 +9,14 @@ It is a static site with no build step and no server, so it runs on GitHub Pages
 - **Schedule & scores**: enter any game quarter by quarter (plus overtime) or simulate it. Simulations are suggestions you can edit before saving. A whole week can be simulated in one click.
 - **Simulation from prior stats**: every team has an offense and defense rating, solved from game scores. Each season starts from last season's ratings, regressed toward average. During the season, the ratings update from your dynasty's results. An optional *historical anchor* blends in each team's real-world strength for that year, so a simulated 2001 Miami plays like 2001 Miami.
 - **Standings**: conference and division tables, with tiebreakers in this order: conference record, head-to-head, overall record, rating. You can turn any conference's title game on or off, and you can override any champion.
-- **Polls**: each new week starts from your previous published poll (or last season's final poll), so you only adjust what changed. Every row shows the team's latest result and where the suggested ranking (team strength plus résumé) would put it, and unranked teams the suggestion likes are one click away. You can switch the starting point to the suggestion instead. Your published poll is what drives selection. The real AP poll can be loaded alongside for comparison.
+- **Rankings (all generated)**: every week, once its games are final, the app releases an **AP poll**, a **Coaches poll** and six **computer rankings**, and combines them into the **BCS standings**, the dynasty's official ranking.
+  - The human polls are simulated voters (62 AP, 59 coaches) who carry their opinions from week to week, react to results, punish losses and fill out Top 25 ballots, so you get points, first-place votes and "others receiving votes." The final Coaches poll ranks the national champion #1, as the real one did.
+  - The computers use wins and losses only, like the real BCS after 2002: Colley Matrix, Massey-style, Wolfe-style (Bradley–Terry), Elo, Billingsley-style (Elo carried over from last season) and Anderson–Hester-style (record and schedule strength).
+  - BCS average = (AP % + Coaches % + computer %) ÷ 3, following the 2004–2013 formula, with each team's best and worst computer dropped. The first BCS standings come out after Week 7; before that, the AP poll is the main ranking.
+  - Last season's final AP poll carries into the next preseason polls.
 - **Team profiles**: click any team name for its page: record, conference finish, rating, scoring, the season schedule with results and win chances, poll history, and its whole dynasty record (final ranks, conference titles, bowls, national titles). You can also edit its colors, logo, conference and strength there.
 - **Logos**: pulled from [this college football logo list](https://gist.github.com/saiemgilani/c6596f0e1c8b148daabc2b7f1e6f6add), which points to ESPN's logo images, and cached in your browser. Teams it doesn't cover fall back to the logo CFBD supplies. Any team's logo can be replaced with your own image URL on its profile.
-- **Postseason by era**, with defaults that match real history:
-  - 1998–2013: the BCS. #1 plays #2, and automatic-qualifier conference champions get the top bowls.
-  - 2014–2023: a 4-team playoff, with the real semifinal bowl rotation.
-  - 2024 onward: a 12-team playoff with five conference-champion auto-bids. The 2024 bye rule (top four champions) and the 2025+ straight seeding are both supported.
-  - You can change the format for any season, for example a 12-team playoff in 1998.
+- **Postseason**: every season ends in a **4-team playoff** of the BCS top 4 (1 vs 4 and 2 vs 3 in rotating major bowls, then a national championship). Everyone else bowl-eligible is placed into bowls by BCS ranking. A one-game BCS title game or a 12-team playoff can still be chosen for any season in Settings.
 - **Bowls**: auto-filled from your rankings for bowl-eligible teams (6+ wins), avoiding conference rematches. Every matchup and bowl name stays editable.
 - **Future seasons**: when CFBD has no data for a year, the next season copies the current teams and conferences and flips home and away on last year's schedule. You can realign conferences, add or remove teams, and nudge ratings on the Teams page.
 - **History**: champions, final top 5 and conference champions for every season.
@@ -47,7 +47,6 @@ API usage is light: about 3–5 calls when a season is imported, plus one call i
 | Change a final score | Click the game (Schedule, Postseason) |
 | Force a conference champion | Standings → Champion dropdown |
 | Add or remove a conference title game | Standings → Title game checkbox |
-| Reorder the rankings | Polls → drag or arrows → Publish |
 | Swap a playoff seed | Postseason → Playoff → change the seed → Rebuild bracket |
 | Change a bowl matchup | Postseason → Bowls → team dropdowns |
 | Realign a team or move one up to FBS | Teams |
@@ -66,7 +65,8 @@ js/league.js        season import, season rollover, ratings plumbing
 js/ratings.js       offense/defense rating solver
 js/sim.js           quarter-by-quarter game simulator
 js/standings.js     records, standings, tiebreakers, champions
-js/polls.js         suggested Top 25
+js/rankings.js      generated AP, Coaches, computer and BCS rankings
+js/polls.js         résumé scoring helpers
 js/postseason.js    title games, BCS/CFP selection, brackets, bowls
 js/eras.js          era defaults (formats, title-game years, bowls)
 js/store.js         saving, backups

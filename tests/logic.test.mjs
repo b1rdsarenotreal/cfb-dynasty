@@ -153,3 +153,50 @@ function playAll(s, filter = () => true) {
   assert.ok(f.home && f.away);
 }
 console.log('All logic tests passed.');
+
+// --- Generated AP / Coaches / BCS rankings
+{
+  const { seasonRankings, officialOrder, AP_VOTERS, COMPUTERS } = await import('../js/rankings.js');
+  const s = makeSeason(2003, 'CFP4');
+  const t0 = Date.now();
+  // Before any games: only the preseason polls exist.
+  let rk = seasonRankings(s);
+  assert.deepEqual(rk.available, [0]);
+  assert.equal(rk.byWeek[0].ap.ranks.length, 25);
+  const fpv = Object.values(rk.byWeek[0].ap.fpv).reduce((a, b) => a + b, 0);
+  assert.equal(fpv, AP_VOTERS, 'every AP voter casts a first-place vote');
+  playAll(s);
+  rk = seasonRankings(s);
+  const weeks = rk.available;
+  assert.ok(weeks.length >= 10, 'a poll for every completed week');
+  const last = weeks[weeks.length - 1];
+  const bcs = rk.byWeek[last].bcs;
+  assert.ok(bcs && bcs.ranks.length === 25, 'BCS standings exist at season end');
+  assert.ok(!rk.byWeek[4].bcs, 'no BCS standings before mid-season');
+  const top = bcs.rows[0];
+  assert.ok(top.avg > 0.8 && top.avg <= 1, `BCS #1 average looks right: ${top.avg}`);
+  for (const c of COMPUTERS) assert.equal(rk.byWeek[last].computers[c.key].length, Object.keys(s.teams).length);
+  // Undefeated teams shouldn't sit behind two-loss teams in the human polls.
+  const rec = records(s);
+  const ap = rk.byWeek[last].ap.ranks;
+  const firstUnbeaten = ap.findIndex(t => rec[t].l === 0), firstTwoLoss = ap.findIndex(t => rec[t].l >= 2);
+  console.log('Final regular-season BCS top 5:', bcs.rows.slice(0, 5).map(r => `${r.team} ${rec[r.team].w}-${rec[r.team].l} (${r.avg.toFixed(3)})`).join(', '));
+  if (firstUnbeaten >= 0 && firstTwoLoss >= 0) assert.ok(firstUnbeaten < firstTwoLoss);
+  // Selection follows the BCS.
+  const sel = selectField(s, computeRatings(s));
+  assert.deepEqual(sel.seeds, bcs.ranks.slice(0, 4));
+  assert.equal(officialOrder(s, computeRatings(s)).source, 'BCS');
+  // Playoff + bowls, then final polls with the champion #1 in the Coaches poll.
+  buildPlayoff(s, sel.seeds);
+  buildBowls(s, computeRatings(s));
+  playAll(s, g => g.round === 'semifinal' || g.type === 'bowl');
+  resolveBracket(s);
+  playAll(s, g => g.round === 'final');
+  rk = seasonRankings(s);
+  assert.ok(rk.available.includes(99), 'final polls after the postseason');
+  assert.equal(rk.byWeek[99].coaches.ranks[0], nationalChampion(s));
+  // Memoized: a second call is instant and identical.
+  assert.equal(seasonRankings(s), rk);
+  console.log(`rankings computed in ${Date.now() - t0} ms; champion ${nationalChampion(s)}, AP #1 ${rk.byWeek[99].ap.ranks[0]}`);
+}
+console.log('Rankings tests passed.');

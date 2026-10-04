@@ -78,3 +78,24 @@ export function withAdjustments(ratings, adjustments = {}) {
 export function rating(ratings, team) {
   return ratings[team] || ratings[FCS] || { off: -10, def: -10, rating: -20 };
 }
+
+// Effective prior = our carried-over rating blended with the real-world anchor.
+export function effectivePrior(season) {
+  const w = season.realRatings ? season.settings.anchorWeight : 0;
+  if (!w) return season.prior;
+  const out = {};
+  const teams = new Set([...Object.keys(season.prior), ...Object.keys(season.realRatings)]);
+  for (const t of teams) {
+    const p = season.prior[t] || { off: 0, def: 0 }, r = season.realRatings[t] || p;
+    out[t] = { off: (1 - w) * p.off + w * r.off, def: (1 - w) * p.def + w * r.def };
+  }
+  return out;
+}
+
+// Ratings from a season's final games (optionally only those passing `filter`).
+export function computeRatings(season, filter = null) {
+  const r = solveRatings(filter ? season.games.filter(filter) : season.games, Object.keys(season.teams), {
+    prior: effectivePrior(season), priorWeight: season.settings.priorWeight,
+  });
+  return withAdjustments(r, season.adjustments);
+}

@@ -216,26 +216,29 @@ def main():
             page.click("a[href='#/schedule']")
             page.click("#w-sim"); page.wait_for_timeout(200)
 
-            # Polls: publish Week 5, then Week 6 should start from it
+            # Rankings are generated: AP, Coaches and BCS for every completed week
             page.click("a[href='#/polls']")
-            page.click("[data-pw='5']")
-            page.click("#p-suggest"); page.click("[data-up='4']"); page.click("#p-publish"); page.wait_for_timeout(150)
-            w5 = page.evaluate("cfb.league.seasons[1998].polls[5].ranks")
-            page.click("[data-pw='6']")
-            draft6 = page.evaluate("[...document.querySelectorAll('.poll-row .poll-team a')].map(a=>a.textContent)")
-            assert draft6 == w5, (draft6[:5], w5[:5])
-            rows6 = page.evaluate("[...document.querySelectorAll('.poll-row')].map(r=>[r.querySelector('.poll-team a').textContent, r.querySelector('.poll-last').textContent])")
+            page.wait_for_selector(".bcs-table")
+            bcs_rows = page.evaluate("[...document.querySelectorAll('.bcs-table tbody tr')].length")
+            assert bcs_rows == 25, bcs_rows
+            assert page.query_selector("#p-publish") is None, "no manual poll editing"
+            page.screenshot(path=f"{OUT}/05-bcs.png", full_page=True)
+            # Early weeks have no BCS standings yet
+            page.click("[data-pw='3']")
+            assert "first BCS standings" in page.text_content(".card")
+            # AP poll for week 6 shows BYE for teams without a week-6 game
+            page.click("[data-pw='6']"); page.click("[data-tab='ap']")
+            rows6 = page.evaluate("[...document.querySelectorAll('.card tbody tr')].map(r=>[r.querySelector('a.team-link').textContent, r.lastElementChild.textContent])")
+            assert len(rows6) == 25
             for nm6, txt6 in rows6:
                 has6 = page.evaluate(f"cfb.league.seasons[1998].games.some(g=>g.week===6 && (g.home==={json.dumps(nm6)}||g.away==={json.dumps(nm6)}))")
                 assert (txt6 == "BYE") == (not has6), (nm6, txt6, has6)
-            print("week 6 poll rows with BYE:", sum(1 for _, x in rows6 if x == "BYE"))
-            page.select_option("#p-base", "suggestion")
-            page.click("[data-pw='7']")
-            draft7 = page.evaluate("[...document.querySelectorAll('.poll-row .poll-team a')].map(a=>a.textContent)")
-            page.click("#p-prev")
-            assert page.evaluate("[...document.querySelectorAll('.poll-row .poll-team a')].map(a=>a.textContent)") == w5
-            page.screenshot(path=f"{OUT}/05a-polls-prev.png")
-            page.select_option("#p-base", "previous")
+            print("week 6 AP rows with BYE:", sum(1 for _, x in rows6 if x == "BYE"))
+            page.screenshot(path=f"{OUT}/05a-ap.png")
+            page.click("[data-tab='coaches']"); page.wait_for_selector(".card tbody tr")
+            page.click("[data-tab='computers']"); page.wait_for_selector(".card tbody tr")
+            page.screenshot(path=f"{OUT}/05c-computers.png")
+            page.click("[data-tab='bcs']")
 
             # Team profile
             page.click("a[href='#/standings']")
@@ -247,27 +250,23 @@ def main():
             nm = page.evaluate("decodeURIComponent(location.hash.split('/')[2])")
             assert page.evaluate(f"cfb.league.seasons[1998].teams[{json.dumps(nm)}].mascot") == "Testers"
 
-            # Poll: publish final with a commissioner tweak (move #3 up to #1)
+            # 4-team playoff seeded from the final BCS standings
             page.click("a[href='#/polls']")
-            page.click("[data-pw='99']")
-            third = page.evaluate("document.querySelectorAll('.poll-row')[2].innerText.split('\\n')[1]")
-            page.click("[data-up='2']"); page.click("[data-up='1']")
-            page.click("#p-publish")
-            page.wait_for_timeout(200)
-            final = page.evaluate("cfb.league.seasons[1998].polls[99].ranks")
-            assert final[0] == third, (final[:3], third)
-            page.click("#p-real"); page.wait_for_timeout(300)
-            page.screenshot(path=f"{OUT}/05-polls.png")
-
-            # BCS title game
+            page.locator("[data-pw]").last.click(); page.click("[data-tab='bcs']")
+            final = page.evaluate("[...document.querySelectorAll('.bcs-table tbody tr a.team-link')].map(a=>a.textContent)")
+            assert len(final) == 25
+            assert page.evaluate("cfb.league.seasons[1998].settings.format") == "CFP4"
             page.click("a[href='#/postseason']")
             page.click("[data-step='field']")
+            assert "BCS standings" in page.text_content("#app")
             page.click("#ps-propose")
             page.click("#ps-build")
             page.wait_for_timeout(200)
-            ncg = page.evaluate("cfb.league.seasons[1998].games.find(g=>g.type==='playoff')")
-            assert ncg["home"] == final[0], ncg
-            page.click(".game[data-game]")
+            seeds = page.evaluate("cfb.league.seasons[1998].playoffSeeds")
+            assert seeds == final[:4], (seeds, final[:4])
+            semis = page.evaluate("cfb.league.seasons[1998].games.filter(g=>g.round==='semifinal').map(g=>[g.home,g.away])")
+            assert semis == [[final[0], final[3]], [final[1], final[2]]], semis
+            page.click(".game[data-game] >> nth=0")
             page.click("#m-sim"); page.click("#m-save"); page.wait_for_timeout(200)
             # Bowls
             page.click("[data-step='bowls']")
@@ -276,10 +275,18 @@ def main():
             print(len(names), "bowls, first:", names[:4])
             assert "Rose Bowl Game" in names or "Rose Bowl" in names, names[:6]
             page.screenshot(path=f"{OUT}/06-bowls.png")
-            page.click("a[href='#/schedule']"); page.click("[data-week='post']")
-            page.click("#w-sim"); page.wait_for_timeout(200)
+            for _ in range(2):  # semifinals and bowls, then the title game
+                page.evaluate("location.hash='#/schedule'"); page.wait_for_selector(".chips")
+                page.click("[data-week='post']")
+                if page.locator("#w-sim").count(): page.click("#w-sim"); page.wait_for_timeout(200)
             page.evaluate("location.hash='#/postseason'"); page.wait_for_timeout(200)
             assert page.is_visible(".banner")
+            # Final polls after the bowls: Coaches poll has the champion at #1
+            champ98 = page.evaluate("(() => { const s = cfb.league.seasons[1998]; const f = s.games.find(g=>g.round==='final'); return f.homeScore>f.awayScore?f.home:f.away })()")
+            page.click("a[href='#/polls']"); page.click("[data-tab='coaches']")
+            assert page.text_content(".chip.active") == "Final"
+            assert page.evaluate("document.querySelector('.card tbody tr a.team-link').textContent") == champ98
+            page.click("a[href='#/postseason']")
             page.screenshot(path=f"{OUT}/07-champion.png")
 
             # Next season

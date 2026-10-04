@@ -1,16 +1,16 @@
 import { loadLeague, saveLeague, clearLeague, getApiKey, setApiKey, exportLeague } from './store.js';
-import { importSeason, nextSeason, computeRatings, importRealPolls, SCHEMA_VERSION, newSeasonShell } from './league.js';
+import { importSeason, nextSeason, computeRatings, SCHEMA_VERSION, newSeasonShell } from './league.js';
 import { loadLogoTable, logoFor } from './logos.js';
 import { simulateGame, winProbability, expectedScores } from './sim.js';
 import { standings, records, hasCCG, conferenceChampion, conferences, winnerOf, INDEPENDENT } from './standings.js';
-import { suggestPoll, latestPollWeek } from './polls.js';
+import { seasonRankings, displayRanks, officialOrder, rankHistory, finalPoll, pollWeeks, COMPUTERS, BCS_FIRST_WEEK, AP_VOTERS, COACHES_VOTERS } from './rankings.js';
 import { syncCCGs, selectField, buildPlayoff, buildBowls, resolveBracket, nationalChampion, blankGame, bowlEligible, lastRegularWeek, fullRanking } from './postseason.js';
 import { FORMATS, defaultHasCCG } from './eras.js';
 import { rating, FCS } from './ratings.js';
 
 // ---------------- State ----------------
 let league = null;
-const ui = { week: null, pollWeek: null, pollDraft: null, pollDraftWeek: null, post: 'ccg', seedDraft: null };
+const ui = { week: null, pollWeek: null, pollTab: null, post: 'ccg', seedDraft: null };
 const app = document.getElementById('app');
 const modal = document.getElementById('modal');
 
@@ -33,11 +33,9 @@ function toast(msg, error = false) {
   clearTimeout(t._t); t._t = setTimeout(() => (t.className = 'toast'), error ? 5000 : 2400);
 }
 function teamNames() { return Object.keys(S().teams).sort((a, b) => a.localeCompare(b)); }
-function rankMap() {
-  const s = S(), w = latestPollWeek(s);
-  if (w === null) return {};
-  return Object.fromEntries(s.polls[w].ranks.map((t, i) => [t, i + 1]));
-}
+// Ranks shown next to team names: the latest BCS standings, or the AP poll
+// before the first BCS standings come out.
+function rankMap() { return displayRanks(S()).ranks; }
 let _ranks = {};
 function logoImg(name, t, size = 18) {
   const color = t ? t.color : '#999';
@@ -73,7 +71,7 @@ function renderChrome() {
   nav.innerHTML = Object.entries(VIEWS).map(([k, label]) => `<a href="#/${k}" class="${k === v || (v === 'team' && k === 'teams') ? 'active' : ''}">${label}</a>`).join('');
   const years = Object.keys(league.seasons).map(Number).sort((a, b) => b - a);
   picker.innerHTML = `<select id="year-select" aria-label="Season">${years.map(y => `<option value="${y}" ${y === league.viewYear ? 'selected' : ''}>${y}${y === league.currentYear ? '' : ' (past)'}</option>`).join('')}</select>`;
-  picker.querySelector('select').onchange = e => { league.viewYear = Number(e.target.value); ui.week = null; ui.pollDraft = null; ui.seedDraft = null; ratingsCache = null; persist(); render(); };
+  picker.querySelector('select').onchange = e => { league.viewYear = Number(e.target.value); ui.week = null; ui.pollWeek = null; ui.seedDraft = null; ratingsCache = null; persist(); render(); };
 }
 
 function render() {
@@ -109,7 +107,7 @@ function renderSetup() {
     btn.disabled = true;
     try {
       const season = await importSeason(year, key, { onProgress: m => (prog.textContent += m + '\n') });
-      league = { schemaVersion: SCHEMA_VERSION, name, startYear: year, currentYear: year, viewYear: year, seasons: { [year]: season } };
+      league = { schemaVersion: SCHEMA_VERSION, name, startYear: year, currentYear: year, viewYear: year, seasons: { [year]: season }, cfp4Migrated: true };
       await saveLeague(league);
       location.hash = '#/schedule';
       toast(`${year} season loaded: ${Object.keys(season.teams).length} teams, ${season.games.length} games.`);
@@ -365,144 +363,106 @@ function renderStandings() {
   }));
 }
 
-// ---------------- Polls ----------------
-function lastCompletedWeek(s) {
-  const weeks = weeksOf(s).filter(w => w !== 'post');
-  let last = 0;
-  for (const w of weeks) if (s.games.filter(g => g.week === w).every(g => g.final)) last = w; else break;
-  return last;
-}
-// The poll a new week starts from when "previous rankings" is the base:
-// the latest published poll before this week, or last season's final poll.
-function previousPoll(s, w) {
-  const earlier = Object.keys(s.polls).map(Number).filter(x => x < w).sort((a, b) => a - b).pop();
-  if (earlier !== undefined) return { label: earlier === 0 ? 'the preseason poll' : `the Week ${earlier} poll`, ranks: s.polls[earlier].ranks };
-  const last = league.seasons[s.year - 1];
-  if (last) {
-    const lw = last.polls[99] ? 99 : latestPollWeek(last);
-    if (lw !== null) return { label: `${s.year - 1}'s final poll`, ranks: last.polls[lw].ranks.filter(t => s.teams[t]) };
+// ---------------- Polls (all generated) ----------------
+const pollLabel = w => (w === 0 ? 'Preseason' : w === 99 ? 'Final' : 'Week ' + w);
+const pct3 = x => x.toFixed(3).replace(/^0/, '');
+
+function recordThrough(s, w) {
+  const rec = {};
+  for (const t of Object.keys(s.teams)) rec[t] = { w: 0, l: 0 };
+  for (const g of s.games) {
+    if (!g.final || (w !== 99 && (g.week === 'post' || g.week > w))) continue;
+    const win = winnerOf(g), lose = win === g.home ? g.away : g.home;
+    if (rec[win]) rec[win].w++; if (rec[lose]) rec[lose].l++;
   }
-  return null;
+  return rec;
 }
-function pollBase() { return league.pollBase || 'previous'; }
-function startingDraft(s, w, ratings) {
-  if (pollBase() === 'previous') {
-    const prev = previousPoll(s, w);
-    if (prev) return [...prev.ranks];
-  }
-  return suggestPoll(s, ratings);
+
+// What a team did in the week a poll covers: the result, or BYE.
+function weekResult(s, t, w) {
+  if (w === 0) return '';
+  const mine = x => x.home === t || x.away === t;
+  const gs = w === 99 ? s.games.filter(x => mine(x) && x.week === 'post') : s.games.filter(x => mine(x) && x.week === w);
+  if (!gs.length) return `<span class="small muted">${w === 99 ? 'No postseason game' : 'BYE'}</span>`;
+  return gs.map(g => {
+    const opp = g.home === t ? g.away : g.home, at = g.neutral || g.home === t ? 'vs' : '@';
+    if (!g.final) return `<span class="small muted">${at} ${esc(opp || 'TBD')}</span>`;
+    const won = winnerOf(g) === t;
+    const label = w === 99 && g.name ? ` <span class="small muted">(${esc(g.name.replace(/^CFP |^BCS /, ''))})</span>` : '';
+    return `<span class="small ${won ? 'move up' : 'move down'}">${won ? 'W' : 'L'} ${Math.max(g.homeScore, g.awayScore)}-${Math.min(g.homeScore, g.awayScore)}</span> <span class="small muted">${at} ${esc(opp)}</span>${label}`;
+  }).join(' · ');
+}
+
+function movement(prev, t, i) {
+  if (!prev) return '<span class="muted">—</span>';
+  const p = prev.indexOf(t);
+  return p === -1 ? '<span class="move up">NR</span>' : p > i ? `<span class="move up">▲${p - i}</span>` : p < i ? `<span class="move down">▼${i - p}</span>` : '<span class="muted">—</span>';
 }
 
 function renderPolls() {
-  const s = S(), ratings = R();
-  const published = Object.keys(s.polls).map(Number).sort((a, b) => a - b);
-  const suggestedWeek = s.games.some(g => g.week === 'post' && g.final) && nationalChampion(s) ? 99 : lastCompletedWeek(s);
-  if (ui.pollWeek === null) ui.pollWeek = suggestedWeek;
-  const w = ui.pollWeek;
-  if (!ui.pollDraft || ui.pollDraftWeek !== `${s.year}-${w}`) {
-    ui.pollDraft = s.polls[w] ? [...s.polls[w].ranks] : startingDraft(s, w, ratings);
-    ui.pollDraftWeek = `${s.year}-${w}`;
-  }
-  const prevInfo = previousPoll(s, w);
-  const prev = prevInfo?.ranks || null;
-  const suggestion = suggestPoll(s, ratings, 40);
-  const sugRank = Object.fromEntries(suggestion.map((t, i) => [t, i + 1]));
-  const rec = records(s);
-  const weekLabel = x => (x === 0 ? 'Preseason' : x === 99 ? 'Final' : 'Week ' + x);
-  const pollWeeksAvail = [...new Set([0, ...weeksOf(s).filter(x => x !== 'post'), 99, ...published])].sort((a, b) => a - b);
-  const realW = Object.keys(s.realPolls || {}).map(Number);
-  const realForWeek = s.realPolls?.[w === 99 ? Math.max(...realW) : w + 1] || s.realPolls?.[w];
-  // Games each ranked team played since the previous poll, to help the commissioner move them.
-  // What each team did in the week this poll covers: its result, BYE, or not played yet.
-  const weekResult = t => {
-    if (w === 0) return '';
-    const mine = x => x.home === t || x.away === t;
-    let gs;
-    if (w === 99) {
-      gs = s.games.filter(x => mine(x) && x.week === 'post');
-      if (!gs.length) return '<span class="small muted">No postseason game</span>';
+  const s = S();
+  const { byWeek, available } = seasonRankings(s);
+  const allWeeks = pollWeeks(s);
+  // Jump to the newest poll whenever a new week's polls come out.
+  const newest = available[available.length - 1];
+  if (ui.pollWeek === null || !available.includes(ui.pollWeek) || ui.pollNewest !== `${s.year}-${newest}`) ui.pollWeek = newest;
+  ui.pollNewest = `${s.year}-${newest}`;
+  const w = ui.pollWeek, e = byWeek[w];
+  const prevW = available[available.indexOf(w) - 1];
+  const prev = prevW !== undefined ? byWeek[prevW] : null;
+  const tabs = [['bcs', 'BCS Standings'], ['ap', 'AP Top 25'], ['coaches', 'Coaches Poll'], ['computers', 'Computers']];
+  if (!ui.pollTab) ui.pollTab = 'bcs';
+  const tab = ui.pollTab;
+  const rec = recordThrough(s, w);
+  const recStr = t => `${rec[t].w}-${rec[t].l}`;
+
+  const humanPoll = (poll, prevPoll, voters, name) => `
+    <div class="table-wrap"><table><thead><tr><th class="num">Rk</th><th>Team</th><th class="num">Record</th><th class="num">Points</th><th class="num" title="First-place votes">1st</th><th class="num">Prev</th><th>${w === 0 ? '' : w === 99 ? 'Postseason' : 'This week'}</th></tr></thead><tbody>
+    ${poll.ranks.map((t, i) => `<tr><td class="num"><b>${i + 1}</b></td><td>${team(t, { rank: false })}</td><td class="num">${recStr(t)}</td><td class="num">${poll.points[t]}</td><td class="num">${poll.fpv[t] || ''}</td><td class="num small">${movement(prevPoll?.ranks, t, i)}</td><td>${weekResult(s, t, w)}</td></tr>`).join('')}
+    </tbody></table></div>
+    ${poll.others.length ? `<p class="small muted" style="margin:10px 0 0">Others receiving votes: ${poll.others.slice(0, 20).map(t => `${esc(t)} ${poll.points[t]}`).join(', ')}</p>` : ''}
+    <p class="small muted" style="margin:6px 0 0">${voters} simulated ${name} voters; 25 points for a first-place vote down to 1 for 25th.${name === 'coaches' && w === 99 ? ' The Coaches poll automatically ranks the national champion #1.' : ''}</p>`;
+
+  let body;
+  if (tab === 'bcs') {
+    if (!e.bcs) {
+      body = `<div class="empty">${w === 99 ? 'The BCS standings end before the bowls. The last standings are under the final regular-season week.' : `The first BCS standings come out after Week ${BCS_FIRST_WEEK}. Until then, the AP poll is the main ranking.`}</div>`;
     } else {
-      gs = s.games.filter(x => mine(x) && x.week === w);
-      if (!gs.length) return '<span class="small muted">BYE</span>';
+      const prevB = prev?.bcs?.ranks;
+      body = `<div class="table-wrap"><table class="bcs-table"><thead>
+        <tr><th></th><th></th><th></th><th colspan="2" class="grp">AP</th><th colspan="2" class="grp">Coaches</th><th colspan="${COMPUTERS.length + 1}" class="grp">Computers</th><th></th><th></th></tr>
+        <tr><th class="num">Rk</th><th>Team</th><th class="num">Rec</th><th class="num">Rk</th><th class="num">%</th><th class="num">Rk</th><th class="num">%</th>
+        ${COMPUTERS.map(c => `<th class="num" title="${esc(c.note)}">${esc(c.name)}</th>`).join('')}<th class="num">%</th><th class="num">BCS avg</th><th class="num">Prev</th></tr></thead><tbody>
+        ${e.bcs.rows.slice(0, 25).map((r, i) => {
+          const comps = COMPUTERS.map(c => r.comp[c.key]);
+          const hi = Math.min(...comps), lo = Math.max(...comps);
+          return `<tr><td class="num"><b>${i + 1}</b></td><td>${team(r.team, { rank: false })}</td><td class="num">${recStr(r.team)}</td>
+          <td class="num">${r.apRank || 'NR'}</td><td class="num muted">${pct3(r.apPct)}</td><td class="num">${r.coRank || 'NR'}</td><td class="num muted">${pct3(r.coPct)}</td>
+          ${comps.map((c, j) => `<td class="num ${(c === hi && comps.indexOf(hi) === j) || (c === lo && comps.lastIndexOf(lo) === j) ? 'dropped' : ''}">${c <= 25 ? c : 'NR'}</td>`).join('')}
+          <td class="num muted">${pct3(r.compPct)}</td><td class="num"><b>${r.avg.toFixed(4).replace(/^0/, '')}</b></td><td class="num small">${movement(prevB, r.team, i)}</td></tr>`;
+        }).join('')}
+      </tbody></table></div>
+      <p class="small muted" style="margin:10px 0 0">BCS average = (AP % + Coaches % + computer %) ÷ 3. Poll % is a team's points out of the maximum possible. Each computer awards 25 points for #1 down to 1 for #25; each team's best and worst computer rankings (struck through) are dropped, and the other four are added up out of 100. Like the real BCS after 2002, the computers only look at wins and losses, not margin of victory.</p>`;
     }
-    return gs.map(g => {
-      const opp = g.home === t ? g.away : g.home, at = g.neutral ? 'vs' : g.home === t ? 'vs' : '@';
-      if (!g.final) return `<span class="small muted">Not played yet · ${at} ${esc(opp || 'TBD')}</span>`;
-      const won = winnerOf(g) === t;
-      const label = w === 99 && g.name ? ` <span class="small muted">(${esc(g.name.replace(/^CFP |^BCS /, ''))})</span>` : '';
-      return `<span class="small ${won ? 'move up' : 'move down'}">${won ? 'W' : 'L'} ${Math.max(g.homeScore, g.awayScore)}-${Math.min(g.homeScore, g.awayScore)}</span> <span class="small muted">${at} ${esc(opp)}</span>${label}`;
-    }).join(' · ');
-  };
-  const row = (t, i) => {
-    let move = '<span class="muted">—</span>';
-    if (prev) { const p = prev.indexOf(t); move = p === -1 ? '<span class="move up">new</span>' : p > i ? `<span class="move up">▲${p - i}</span>` : p < i ? `<span class="move down">▼${i - p}</span>` : '<span class="muted">—</span>'; }
-    return `<div class="poll-row" draggable="true" data-i="${i}">
-      <div class="r">${i + 1}</div><div class="poll-team">${team(t, { rank: false })}<div class="poll-last">${weekResult(t)}</div></div>
-      <div class="num muted small">${rec[t] ? `${rec[t].w}-${rec[t].l}` : ''}</div>
-      <div class="small">${move}</div>
-      <div class="num small muted rt" title="Where the suggested ranking puts this team">${sugRank[t] ? 'Sug #' + sugRank[t] : 'Sug —'}</div>
-      <div class="row" style="gap:2px;justify-content:flex-end"><button class="btn sm ghost" data-up="${i}" aria-label="Move up">▲</button><button class="btn sm ghost" data-down="${i}" aria-label="Move down">▼</button><button class="btn sm ghost" data-rm="${i}" aria-label="Remove">✕</button></div>
-    </div>`;
-  };
-  const others = teamNames().filter(t => !ui.pollDraft.includes(t));
-  const knocking = suggestion.filter(t => !ui.pollDraft.includes(t)).slice(0, 6);
+  } else if (tab === 'ap') body = humanPoll(e.ap, prev?.ap, AP_VOTERS, 'AP');
+  else if (tab === 'coaches') body = humanPoll(e.coaches, prev?.coaches, COACHES_VOTERS, 'coaches');
+  else {
+    body = !e.computers ? '<div class="empty">The computer rankings start once games have been played, and stop before the bowls.</div>' : `
+      <div class="table-wrap"><table><thead><tr><th class="num">Rk</th>${COMPUTERS.map(c => `<th title="${esc(c.note)}">${esc(c.name)}</th>`).join('')}</tr></thead><tbody>
+      ${Array.from({ length: 25 }, (_, i) => `<tr><td class="num"><b>${i + 1}</b></td>${COMPUTERS.map(c => `<td>${team(e.computers[c.key][i], { rank: false, size: 16 })}</td>`).join('')}</tr>`).join('')}
+      </tbody></table></div>
+      <ul class="small muted" style="margin:10px 0 0;padding-left:18px">${COMPUTERS.map(c => `<li><b>${esc(c.name)}</b>: ${esc(c.note)}</li>`).join('')}</ul>`;
+  }
+
   app.innerHTML = `
-    <div class="section-head"><h1>${s.year} Polls</h1><span class="muted">Your poll is the official ranking — it drives playoff and bowl selection.</span></div>
-    <div class="chips">${pollWeeksAvail.map(x => `<button class="chip ${x === w ? 'active' : ''} ${s.polls[x] ? 'done' : ''}" data-pw="${x}">${weekLabel(x)}</button>`).join('')}</div>
-    <div class="grid" style="grid-template-columns: minmax(0,2fr) minmax(260px,1fr)">
-      <div class="card">
-        <div class="row" style="margin-bottom:8px"><h2 style="margin:0">${weekLabel(w)} Top ${ui.pollDraft.length}</h2>
-          ${s.polls[w] ? '<span class="badge final">Published</span>' : '<span class="badge">Draft</span>'}<span class="spacer"></span>
-          <button class="btn" id="p-prev" ${prevInfo ? '' : 'disabled title="No earlier poll to copy"'}>Start from previous poll</button>
-          <button class="btn" id="p-suggest">Start from suggestion</button>
-          <button class="btn primary" id="p-publish">${s.polls[w] ? 'Update' : 'Publish'}</button></div>
-        <div class="row small" style="margin:0 0 10px">
-          <label class="row" style="gap:6px">New weeks start from
-            <select id="p-base"><option value="previous" ${pollBase() === 'previous' ? 'selected' : ''}>the previous poll</option><option value="suggestion" ${pollBase() === 'suggestion' ? 'selected' : ''}>the suggested ranking</option></select></label>
-          <span class="muted">${prevInfo ? `Movement is vs. ${esc(prevInfo.label)}.` : 'No earlier poll yet.'} Drag rows or use the arrows.</span>
-        </div>
-        <div id="poll-list">${ui.pollDraft.map(row).join('')}</div>
-        ${knocking.length ? `<div class="small" style="margin-top:10px"><span class="muted">Suggested teams not ranked:</span> ${knocking.map(t => `<button class="btn sm" data-addteam="${esc(t)}">+ ${esc(t)} <span class="muted">(Sug #${sugRank[t]})</span></button>`).join(' ')}</div>` : ''}
-        <div class="row" style="margin-top:10px"><select id="p-add"><option value="">Add a team…</option>${others.map(t => `<option>${esc(t)}</option>`).join('')}</select>
-          <label class="row small" style="gap:4px">at #<input type="number" id="p-add-at" min="1" max="${ui.pollDraft.length + 1}" value="${ui.pollDraft.length + 1}" style="width:60px"></label>
-          <span class="spacer"></span>
-          ${ui.pollDraft.length > 25 ? '<button class="btn sm" id="p-trim">Trim to 25</button>' : ''}
-          ${s.polls[w] ? '<button class="btn danger sm" id="p-unpublish">Unpublish</button>' : ''}</div>
-      </div>
-      <div class="card">
-        <h2>Real AP poll</h2>
-        ${realForWeek ? `<p class="small muted">${esc(realForWeek.poll)} — for comparison only.</p><ol style="margin:0;padding-left:22px">${realForWeek.ranks.map(t => `<li>${esc(t)}</li>`).join('')}</ol>`
-          : `<p class="small muted">See what the real voters thought that week (historical seasons).</p><button class="btn" id="p-real">Load real polls</button>`}
-      </div>
-    </div>`;
+    <div class="section-head"><h1>${s.year} Rankings</h1><span class="muted">Generated from your results every week. The BCS standings are the official ranking: they pick the 4-team playoff and fill the bowls.</span></div>
+    <div class="chips">${allWeeks.map(x => available.includes(x)
+      ? `<button class="chip ${x === w ? 'active' : ''}" data-pw="${x}">${pollLabel(x)}</button>`
+      : `<button class="chip" disabled style="opacity:.45;cursor:default" title="Released once this week's games are final">${pollLabel(x)}</button>`).join('')}</div>
+    <div class="steps">${tabs.map(([k, l]) => `<a href="#/polls" data-tab="${k}" class="${k === tab ? 'active' : ''}">${l}${k === 'bcs' && !e.bcs ? ' <span class="small" style="opacity:.6">(n/a)</span>' : ''}</a>`).join('')}</div>
+    <div class="card">${body}</div>`;
   $$('[data-pw]').forEach(b => (b.onclick = () => { ui.pollWeek = Number(b.dataset.pw); renderPolls(); }));
-  const move = (from, to) => { if (to < 0 || to >= ui.pollDraft.length) return; const [t] = ui.pollDraft.splice(from, 1); ui.pollDraft.splice(to, 0, t); renderPolls(); };
-  $$('[data-up]').forEach(b => (b.onclick = () => move(+b.dataset.up, +b.dataset.up - 1)));
-  $$('[data-down]').forEach(b => (b.onclick = () => move(+b.dataset.down, +b.dataset.down + 1)));
-  $$('[data-rm]').forEach(b => (b.onclick = () => { ui.pollDraft.splice(+b.dataset.rm, 1); renderPolls(); }));
-  let dragFrom = null;
-  $$('.poll-row').forEach(r => {
-    r.ondragstart = () => (dragFrom = +r.dataset.i);
-    r.ondragover = e => { e.preventDefault(); r.classList.add('drag-over'); };
-    r.ondragleave = () => r.classList.remove('drag-over');
-    r.ondrop = e => { e.preventDefault(); if (dragFrom !== null) move(dragFrom, +r.dataset.i); };
-  });
-  const addAt = t => {
-    const at = Math.min(Math.max(1, Number($('#p-add-at').value) || ui.pollDraft.length + 1), ui.pollDraft.length + 1);
-    ui.pollDraft.splice(at - 1, 0, t); renderPolls();
-  };
-  $('#p-add').onchange = e => { if (e.target.value) addAt(e.target.value); };
-  $$('[data-addteam]').forEach(b => (b.onclick = () => addAt(b.dataset.addteam)));
-  if ($('#p-trim')) $('#p-trim').onclick = () => { ui.pollDraft = ui.pollDraft.slice(0, 25); renderPolls(); };
-  $('#p-base').onchange = e => { league.pollBase = e.target.value; persist(); toast(`New weeks will start from ${e.target.value === 'previous' ? 'the previous poll' : 'the suggested ranking'}.`); };
-  $('#p-prev').onclick = () => { if (prevInfo) { ui.pollDraft = [...prevInfo.ranks]; renderPolls(); toast(`Copied ${prevInfo.label}.`); } };
-  $('#p-suggest').onclick = () => { ui.pollDraft = suggestPoll(s, ratings); renderPolls(); };
-  $('#p-publish').onclick = () => { s.polls[w] = { ranks: [...ui.pollDraft], publishedAt: new Date().toISOString() }; changed(); toast(`${weekLabel(w)} poll published.`); render(); };
-  if ($('#p-unpublish')) $('#p-unpublish').onclick = () => { delete s.polls[w]; ui.pollDraft = null; changed(); render(); };
-  if ($('#p-real')) $('#p-real').onclick = async () => {
-    try { await importRealPolls(s, getApiKey()); changed(); toast('Real polls loaded.'); render(); }
-    catch (e) { toast(e.message, true); }
-  };
+  $$('[data-tab]').forEach(a => (a.onclick = ev => { ev.preventDefault(); ui.pollTab = a.dataset.tab; renderPolls(); }));
 }
 
 // ---------------- Postseason ----------------
@@ -526,7 +486,7 @@ function renderPostseason() {
       const playoff = s.games.filter(g => g.type === 'playoff');
       const anyFinal = playoff.some(g => g.final);
       if (!ui.seedDraft || ui.seedDraft.year !== s.year) ui.seedDraft = { year: s.year, seeds: s.playoffSeeds ? [...s.playoffSeeds] : null };
-      const pollW = latestPollWeek(s);
+      const off = officialOrder(s, ratings);
       const seeds = ui.seedDraft.seeds;
       const rounds = ['first_round', 'quarterfinal', 'semifinal', 'final'].map(r => [r, playoff.filter(g => g.round === r)]).filter(([, gs]) => gs.length);
       const roundName = { first_round: 'First round', quarterfinal: 'Quarterfinals', semifinal: 'Semifinals', final: 'Championship' };
@@ -534,7 +494,7 @@ function renderPostseason() {
         <div class="card">
           <div class="row" style="margin-bottom:8px"><h2 style="margin:0">${esc(FORMATS[s.settings.format])}</h2><span class="spacer"></span>
             <button class="btn" id="ps-propose">Propose field from rankings</button></div>
-          <p class="small muted">Based on ${pollW !== null ? `your published ${pollW === 99 ? 'final' : pollW === 0 ? 'preseason' : 'week ' + pollW} poll` : 'the suggested ranking (no poll published yet)'}${s.settings.format === 'CFP12' ? ` · top 5 conference champions get automatic bids · ${s.settings.seedByChampions ? 'byes go to the top 4 champions (2024 rule)' : 'seeded straight by ranking (2025+ rule)'}` : ''}. Change any seed before building.</p>
+          <p class="small muted">Based on the ${off.source === 'BCS' ? 'BCS standings' : 'AP poll (no BCS standings yet)'} after ${esc(pollLabel(off.week))}${s.settings.format === 'CFP12' ? ` · top 5 conference champions get automatic bids · ${s.settings.seedByChampions ? 'byes go to the top 4 champions (2024 rule)' : 'seeded straight by ranking (2025+ rule)'}` : ''}. Change any seed before building.</p>
           ${seeds ? `<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;margin:10px 0">${seeds.map((t, i) => `<label class="row" style="gap:6px"><span class="seedno">${i + 1}</span><select data-seed="${i}" style="flex:1">${teamOptions(t)}</select></label>`).join('')}</div>
             <div class="row"><button class="btn primary" id="ps-build" ${anyFinal ? 'disabled title="Clear playoff results first"' : ''}>${playoff.length ? 'Rebuild bracket' : 'Lock field & build bracket'}</button>${anyFinal ? '<span class="small muted">Bracket has results; clear them to rebuild.</span>' : ''}</div>` : ''}
         </div>
@@ -594,13 +554,12 @@ async function startNextSeason() {
   const open = s.games.filter(g => !g.final && g.home && g.away).length;
   if (open && !confirm(`${open} games in ${s.year} have no result. Start ${s.year + 1} anyway?`)) return;
   if (league.seasons[s.year + 1]) { league.currentYear = league.viewYear = s.year + 1; persist(); return render(); }
-  // Final poll: keep the commissioner's if published; otherwise publish the suggestion.
-  if (!s.polls[99]) s.polls[99] = { ranks: suggestPoll(s, R()), publishedAt: new Date().toISOString(), auto: true };
   app.insertAdjacentHTML('afterbegin', '<div class="card progress" id="ns-prog">Building next season…\n</div>');
   try {
     const next = await nextSeason(s, getApiKey(), { onProgress: m => ($('#ns-prog').textContent += m + '\n') });
+    next.preseasonCarry = finalPoll(s).ranks; // last year's final AP poll shapes the new preseason polls
     league.seasons[next.year] = next; league.currentYear = league.viewYear = next.year;
-    ui.week = null; ui.pollWeek = null; ui.pollDraft = null; ui.seedDraft = null; ui.post = 'ccg';
+    ui.week = null; ui.pollWeek = null; ui.seedDraft = null; ui.post = 'ccg';
     ratingsCache = null; await saveLeague(league);
     location.hash = '#/schedule';
     toast(`${next.year} season ready: ${Object.keys(next.teams).length} teams.`);
@@ -650,8 +609,7 @@ function renderTeams() {
 function seasonSummary(season, name) {
   if (!season.teams[name]) return null;
   const rec = records(season)[name];
-  const fw = season.polls[99] ? 99 : latestPollWeek(season);
-  const finalRank = fw !== null ? season.polls[fw].ranks.indexOf(name) + 1 || null : null;
+  const finalRank = finalPoll(season).ranks.indexOf(name) + 1 || null;
   const conf = season.teams[name].conference;
   const confChamp = conf !== INDEPENDENT && season.games.some(g => g.final) ? conferenceChampion(season, conf, null) === name : false;
   const post = season.games.filter(g => (g.type === 'bowl' || g.type === 'playoff') && g.final && (g.home === name || g.away === name));
@@ -680,7 +638,7 @@ function renderTeamPage() {
     .sort((a, b) => (a.week === 'post' ? 99 : a.week) - (b.week === 'post' ? 99 : b.week) || (a.type === 'playoff') - (b.type === 'playoff'));
   const played = rec.w + rec.l;
   const lg = logoFor(name, t);
-  const pollWeeks = Object.keys(s.polls).map(Number).sort((a, b) => a - b);
+  const history_ = rankHistory(s, name);
   const wkLabel = x => (x === 0 ? 'Pre' : x === 99 ? 'Final' : 'Wk ' + x);
 
   const gameRow = g => {
@@ -730,7 +688,9 @@ function renderTeamPage() {
       <div>
         <div class="card">
           <h2>Poll history</h2>
-          ${pollWeeks.length ? `<div class="chips" style="margin:0">${pollWeeks.map(x => { const i = s.polls[x].ranks.indexOf(name); return `<span class="chip" style="cursor:default">${wkLabel(x)}: <b>${i >= 0 ? '#' + (i + 1) : 'NR'}</b></span>`; }).join('')}</div>` : '<p class="muted small">No polls published this season.</p>'}
+          <table><thead><tr><th>Week</th><th class="num">AP</th><th class="num">Coaches</th><th class="num">BCS</th></tr></thead><tbody>
+          ${history_.map(h => `<tr><td>${wkLabel(h.week)}</td><td class="num">${h.ap ? '#' + h.ap : 'NR'}</td><td class="num">${h.coaches ? '#' + h.coaches : 'NR'}</td><td class="num">${h.bcs ? '#' + h.bcs : '<span class="muted">—</span>'}</td></tr>`).join('')}
+          </tbody></table>
         </div>
         <div class="card">
           <h2>Dynasty record</h2>
@@ -761,7 +721,7 @@ function renderTeamPage() {
       </div>
     </div>`;
   $$('tr[data-game]').forEach(tr => (tr.onclick = e => { if (!e.target.closest('a')) openGame(tr.dataset.game); }));
-  $$('[data-yr]').forEach(b => (b.onclick = () => { league.viewYear = Number(b.dataset.yr); ui.week = null; ui.pollDraft = null; ui.seedDraft = null; ratingsCache = null; persist(); render(); }));
+  $$('[data-yr]').forEach(b => (b.onclick = () => { league.viewYear = Number(b.dataset.yr); ui.week = null; ui.pollWeek = null; ui.seedDraft = null; ratingsCache = null; persist(); render(); }));
   const save = (fn, msg) => () => { fn(); changed(); if (msg) toast(msg); render(); };
   $('#tp-conf').onchange = save(() => (t.conference = $('#tp-conf').value.trim() || INDEPENDENT), 'Conference updated.');
   $('#tp-div').onchange = save(() => (t.division = $('#tp-div').value.trim() || null));
@@ -778,16 +738,16 @@ function renderHistory() {
   const rows = years.map(y => {
     const s = league.seasons[y];
     const champ = nationalChampion(s);
-    const final = s.polls[99]?.ranks || s.polls[latestPollWeek(s)]?.ranks;
+    const fp = finalPoll(s), final = fp.week ? fp.ranks : null;
     const confChamps = Object.keys(conferences(s)).filter(c => c !== INDEPENDENT).map(c => [c, s.games.some(g => g.final) ? conferenceChampion(s, c, null) : null]).filter(([, t]) => t);
     const f = s.games.find(g => g.type === 'playoff' && g.round === 'final' && g.final);
     return `<div class="card"><div class="row"><h2 style="margin:0">${y}</h2><span class="badge">${esc(FORMATS[s.settings.format])}</span><span class="spacer"></span><button class="btn sm" data-view="${y}">Open season</button></div>
       <p style="margin:8px 0">${champ ? `🏆 <b>${esc(champ)}</b>${f ? ` <span class="muted">def. ${esc(f.home === champ ? f.away : f.home)} ${Math.max(f.homeScore, f.awayScore)}–${Math.min(f.homeScore, f.awayScore)}</span>` : ''}` : '<span class="muted">No champion yet</span>'}</p>
-      ${final ? `<p class="small" style="margin:4px 0"><span class="muted">Top 5:</span> ${final.slice(0, 5).map((t, i) => `${i + 1}. ${esc(t)}`).join(' · ')}</p>` : ''}
+      ${final ? `<p class="small" style="margin:4px 0"><span class="muted">${fp.week === 99 ? 'Final AP' : 'Latest AP'} top 5:</span> ${final.slice(0, 5).map((t, i) => `${i + 1}. ${esc(t)}`).join(' · ')}</p>` : ''}
       ${confChamps.length ? `<p class="small muted" style="margin:4px 0">${confChamps.map(([c, t]) => `${esc(c)}: ${esc(t)}`).join(' · ')}</p>` : ''}</div>`;
   });
   app.innerHTML = `<div class="section-head"><h1>Dynasty history</h1><span class="muted">${esc(league.name)} · since ${league.startYear}</span></div>${rows.join('')}`;
-  $$('[data-view]').forEach(b => (b.onclick = () => { league.viewYear = Number(b.dataset.view); ui.week = null; ui.pollDraft = null; ui.seedDraft = null; ratingsCache = null; persist(); location.hash = '#/schedule'; render(); }));
+  $$('[data-view]').forEach(b => (b.onclick = () => { league.viewYear = Number(b.dataset.view); ui.week = null; ui.pollWeek = null; ui.seedDraft = null; ratingsCache = null; persist(); location.hash = '#/schedule'; render(); }));
 }
 
 // ---------------- Settings ----------------
@@ -841,6 +801,14 @@ function renderSettings() {
     league.viewYear ||= league.currentYear;
     // Older saves kept real-world game results; they're no longer used.
     for (const season of Object.values(league.seasons)) for (const g of season.games) delete g.real;
+    // The dynasty now ends every season in a 4-team playoff seeded by the BCS.
+    // Switch seasons whose postseason hasn't been set up yet.
+    if (!league.cfp4Migrated) {
+      for (const season of Object.values(league.seasons)) {
+        if (!season.games.some(g => g.type === 'playoff' || g.type === 'bowl')) season.settings.format = 'CFP4';
+      }
+      league.cfp4Migrated = true; persist();
+    }
   }
   render();
   // Logos arrive asynchronously; re-render once the list is loaded.

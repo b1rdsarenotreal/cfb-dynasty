@@ -2,7 +2,7 @@
 // Every automatic step produces a proposal the commissioner can edit.
 
 import { hasCCG, ccgParticipants, allChampions, conferences, records, winnerOf, INDEPENDENT } from './standings.js';
-import { latestPoll, suggestPoll } from './polls.js';
+import { officialOrder } from './rankings.js';
 import { bcsAQConferences, bowlRank, CFP12_AUTO_BIDS, DEFAULT_BOWLS } from './eras.js';
 
 export function newGameId(season) {
@@ -40,10 +40,9 @@ export function syncCCGs(season, ratings) {
 }
 
 // ---------- Rankings used for selection ----------
+// The official order: the latest BCS standings (AP poll before they're released).
 export function fullRanking(season, ratings) {
-  const poll = latestPoll(season, ratings);
-  const rest = suggestPoll(season, ratings, Infinity).filter(t => !poll.includes(t));
-  return [...poll, ...rest];
+  return officialOrder(season, ratings).order;
 }
 
 // Returns { format, seeds: [team...] } — seeds[0] is the #1 seed.
@@ -85,9 +84,9 @@ export function buildPlayoff(season, seeds) {
     games.push(slotGame(season, 'final', 'BCS National Championship', S(1), S(2)));
   } else if (fmt === 'CFP4') {
     const sites = CFP4_SEMI_SITES[(season.year - 2014 + 300) % 3];
-    const s1 = slotGame(season, 'semifinal', `CFP Semifinal — ${sites[0]}`, S(1), S(4));
-    const s2 = slotGame(season, 'semifinal', `CFP Semifinal — ${sites[1]}`, S(2), S(3));
-    games.push(s1, s2, slotGame(season, 'final', 'CFP National Championship', W(s1), W(s2)));
+    const s1 = slotGame(season, 'semifinal', `National Semifinal — ${sites[0]}`, S(1), S(4));
+    const s2 = slotGame(season, 'semifinal', `National Semifinal — ${sites[1]}`, S(2), S(3));
+    games.push(s1, s2, slotGame(season, 'final', 'National Championship', W(s1), W(s2)));
   } else if (fmt === 'CFP12') {
     // First round at the higher seed's stadium.
     const r = [[8, 9], [5, 12], [7, 10], [6, 11]].map(([a, b]) =>

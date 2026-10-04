@@ -2,7 +2,7 @@
 // future seasons, and computing the ratings everything else uses.
 
 import { getFbsTeams, getGames, getRankings } from './api.js';
-import { solveRatings, regress, withAdjustments } from './ratings.js';
+import { solveRatings, regress, computeRatings } from './ratings.js';
 import { defaultFormat, defaultSeedByChampions, defaultUseDivisions } from './eras.js';
 import { blankGame } from './postseason.js';
 
@@ -138,22 +138,4 @@ export async function importRealPolls(season, apiKey) {
   return season.realPolls;
 }
 
-// Effective prior = our carried-over rating blended with the real-world anchor.
-export function effectivePrior(season) {
-  const w = season.realRatings ? season.settings.anchorWeight : 0;
-  if (!w) return season.prior;
-  const out = {};
-  const teams = new Set([...Object.keys(season.prior), ...Object.keys(season.realRatings)]);
-  for (const t of teams) {
-    const p = season.prior[t] || { off: 0, def: 0 }, r = season.realRatings[t] || p;
-    out[t] = { off: (1 - w) * p.off + w * r.off, def: (1 - w) * p.def + w * r.def };
-  }
-  return out;
-}
-
-export function computeRatings(season) {
-  const r = solveRatings(season.games, Object.keys(season.teams), {
-    prior: effectivePrior(season), priorWeight: season.settings.priorWeight,
-  });
-  return withAdjustments(r, season.adjustments);
-}
+export { effectivePrior, computeRatings } from './ratings.js';

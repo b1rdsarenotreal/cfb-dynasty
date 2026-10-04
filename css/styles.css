@@ -175,3 +175,8 @@ tr.clickable { cursor: pointer; }
 tr.clickable:hover td { background: var(--panel-2); }
 input[type=color] { width: 54px; height: 34px; padding: 2px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); }
 @media (max-width: 640px) { .team-hero-name { font-size: 26px; } .team-hero-logo { width: 64px; height: 64px; } .team-hero-logo img { width: 52px; height: 52px; } }
+
+/* Rankings */
+.bcs-table th.grp { text-align: center; border-bottom: 2px solid var(--line); color: var(--ink); }
+.bcs-table td.dropped { text-decoration: line-through; color: var(--muted); opacity: .7; }
+.bcs-table td, .bcs-table th { padding: 5px 5px; }

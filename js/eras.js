@@ -2,16 +2,16 @@
 // the postseason format and each conference's title game in Settings.
 
 export const FORMATS = {
-  BCS: 'BCS (1 vs 2 title game)',
-  CFP4: 'College Football Playoff (4 teams)',
+  CFP4: '4-team playoff (BCS top 4)',
+  BCS: 'BCS title game (BCS #1 vs #2)',
   CFP12: 'College Football Playoff (12 teams)',
   NONE: 'Bowls only, no title game',
 };
 
-export function defaultFormat(year) {
-  if (year <= 2013) return 'BCS';
-  if (year <= 2023) return 'CFP4';
-  return 'CFP12';
+// This dynasty breaks from history: every season ends in a 4-team playoff
+// seeded by the BCS standings, with everyone else going to bowls.
+export function defaultFormat() {
+  return 'CFP4';
 }
 
 // 12-team seeding: 2024 gave the top-4 seeds (byes) to the four highest-ranked
