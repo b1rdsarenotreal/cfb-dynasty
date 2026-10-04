@@ -2,7 +2,7 @@ import { loadLeague, saveLeague, clearLeague, getApiKey, setApiKey, exportLeague
 import { importSeason, nextSeason, computeRatings, SCHEMA_VERSION, newSeasonShell } from './league.js';
 import { loadLogoTable, logoFor } from './logos.js';
 import { simulateGame, winProbability, expectedScores } from './sim.js';
-import { standings, records, hasCCG, conferenceChampion, allChampions, conferences, winnerOf, INDEPENDENT } from './standings.js';
+import { standings, records, hasCCG, conferenceChampion, allChampions, conferences, winnerOf, isConferenceGame, INDEPENDENT } from './standings.js';
 import { seasonRankings, displayRanks, officialOrder, rankHistory, finalPoll, pollWeeks, COMPUTERS, BCS_FIRST_WEEK, AP_VOTERS, COACHES_VOTERS } from './rankings.js';
 import { syncCCGs, selectField, buildPlayoff, buildBowls, resolveBracket, nationalChampion, blankGame, bowlEligible, lastRegularWeek, fullRanking, playoffSites, bowlsOn } from './postseason.js';
 import { FORMATS, FUTURE_FORMAT, defaultHasCCG } from './eras.js';
@@ -188,11 +188,43 @@ function defaultWeek(season) {
   return weeks.find(w => season.games.some(g => g.week === w && !g.final && g.home && g.away)) ?? weeks[weeks.length - 1] ?? 1;
 }
 
+// Order games happen in, so "record entering this game" counts only earlier games.
+const PLAYOFF_ROUND = { first_round: 1, quarterfinal: 2, semifinal: 3, final: 4 };
+const gameOrder = g => (g.week === 'post' ? 100 + (g.type === 'playoff' ? PLAYOFF_ROUND[g.round] || 0 : 0) : g.week);
+
+// Each team's overall and conference record going into game g.
+function recordsEntering(s, g, teams) {
+  const out = Object.fromEntries(teams.map(t => [t, { w: 0, l: 0, cw: 0, cl: 0 }]));
+  const order = gameOrder(g);
+  for (const x of s.games) {
+    if (!x.final || x === g || gameOrder(x) >= order) continue;
+    const win = winnerOf(x), lose = win === x.home ? x.away : x.home;
+    const conf = isConferenceGame(s, x);
+    if (out[win]) { out[win].w++; if (conf) out[win].cw++; }
+    if (out[lose]) { out[lose].l++; if (conf) out[lose].cl++; }
+  }
+  return out;
+}
+// A conference matchup: two members of the same conference in a league game or title game.
+function matchupConference(s, g) {
+  if (!g.home || !g.away) return null;
+  if (g.type === 'ccg') return g.conference || s.teams[g.home]?.conference || null;
+  return isConferenceGame(s, g) ? s.teams[g.home].conference : null;
+}
+
 function gameCard(g) {
+  const s = S();
   const qn = Math.max(4, g.homeQ.length, g.awayQ.length);
   const w = winnerOf(g);
+  const conf = matchupConference(s, g);
+  const recs = !g.final && g.home && g.away ? recordsEntering(s, g, [g.home, g.away]) : null;
+  const recText = t => {
+    const r = recs?.[t];
+    if (!r || !s.teams[t]) return '';
+    return ` <span class="pre-rec" title="Record entering this game${conf ? ' (conference record in parentheses)' : ''}">${r.w}-${r.l}${conf ? ` (${r.cw}-${r.cl})` : ''}</span>`;
+  };
   const line = (t, q, score) => `<div class="line" style="--q:${qn}">
-      <div class="${g.final ? (w === t ? 'winner' : 'loser') : ''}">${team(t, { seed: seedOf(g, t) })}</div>
+      <div class="${g.final ? (w === t ? 'winner' : 'loser') : ''}">${team(t, { seed: seedOf(g, t) })}${recText(t)}</div>
       ${Array.from({ length: qn }, (_, i) => `<div class="q">${g.final ? (q[i] ?? 0) : ''}</div>`).join('')}
       <div class="total">${g.final ? score : ''}</div></div>`;
   let meta = '';
@@ -205,7 +237,9 @@ function gameCard(g) {
   }
   if (g.neutral) meta += '<span>Neutral</span>';
   if (!g.final && g.home && g.away) meta += `<button class="btn sm" data-simgame="${g.id}" title="Simulate this game and save the result">🎲 Sim</button>`;
-  return `<div class="game" data-game="${g.id}" tabindex="0">${line(g.away, g.awayQ, g.awayScore)}${line(g.home, g.homeQ, g.homeScore)}<div class="meta">${meta}</div></div>`;
+  const confAttrs = conf ? ` conf-game" style="--cc:${esc(confColor(conf))}` : '';
+  const corner = conf ? `<a class="corner-logo" href="${confHref(conf)}" title="${esc(conf)} game">${confLogo(conf, 20)}</a>` : '';
+  return `<div class="game${confAttrs}" data-game="${g.id}" tabindex="0">${corner}${line(g.away, g.awayQ, g.awayScore)}${line(g.home, g.homeQ, g.homeScore)}<div class="meta">${meta}</div></div>`;
 }
 function seedOf(g, t) {
   if (g.type !== 'playoff' || !t) return null;
@@ -807,6 +841,16 @@ function renderTeamPage() {
 // known. Any of them can be replaced (or added) on the conference's page.
 const ESPN_CONF_IDS = { 'ACC': 1, 'Big 12': 4, 'Big Ten': 5, 'SEC': 8, 'Pac-10': 9, 'Pac-12': 9, 'Conference USA': 12, 'Mid-American': 15, 'Mountain West': 17, 'Sun Belt': 37, 'American Athletic': 151 };
 const confHref = c => `#/conference/${encodeURIComponent(c)}`;
+// Default conference colors (each can be changed on the conference's page).
+const CONF_COLORS = { 'SEC': '#0B2D6B', 'Big Ten': '#0088CE', 'Big 12': '#C8102E', 'ACC': '#013CA6', 'Pac-10': '#00407A', 'Pac-12': '#00407A', 'Big East': '#7A1F3D', 'Mid-American': '#00A651', 'Mountain West': '#4B2E83', 'Conference USA': '#1B365D', 'Sun Belt': '#E0A100', 'American Athletic': '#B0121F', 'Western Athletic': '#5B6770', 'Big West': '#0C7C84', 'FBS Independents': '#6B6F78' };
+function confColor(c) {
+  const custom = league.conferenceColors?.[c];
+  if (custom) return custom;
+  if (CONF_COLORS[c]) return CONF_COLORS[c];
+  let h = 0; for (const ch of String(c)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return `hsl(${h % 360} 55% 40%)`;
+}
+const toHex = c => (/^#[0-9a-f]{6}$/i.test(c) ? c : '#555555');
 function confLogoUrl(c) {
   const custom = league.conferenceLogos?.[c];
   if (custom) return custom;
@@ -891,7 +935,7 @@ function renderConferencePage() {
   const postGames = s.games.filter(g => (g.type === 'bowl' || g.type === 'playoff') && (sum.members.includes(g.home) || sum.members.includes(g.away)));
 
   app.innerHTML = `
-    <div class="conf-hero">
+    <div class="conf-hero" style="border-bottom-color:${esc(confColor(conf))}">
       <div class="conf-hero-logo">${confLogo(conf, 76)}</div>
       <div><div class="team-hero-sub">${s.year} · ${sum.members.length} teams</div><div class="team-hero-name">${esc(conf)}</div></div>
       <span class="spacer"></span><a class="btn" href="#/conferences">All conferences</a>
@@ -918,6 +962,8 @@ function renderConferencePage() {
           <div class="row" style="margin-top:8px">${confLogo(conf, 40)}<span class="spacer"></span>
             <label class="btn sm">Upload image… <input type="file" id="cf-logo-file" accept="image/*" hidden></label>
             ${logoUrl ? '<button class="btn sm" id="cf-logo-reset">Use default</button>' : ''}<button class="btn sm primary" id="cf-logo-save">Save link</button></div>
+          <div class="row" style="margin-top:12px"><label class="field" style="flex-direction:row;align-items:center;gap:8px">Conference color <input type="color" id="cf-color" value="${esc(toHex(confColor(conf)))}"></label>
+            ${league.conferenceColors?.[conf] ? '<button class="btn sm" id="cf-color-reset">Default color</button>' : ''}<span class="small muted">Used for the border on ${esc(conf)} games.</span></div>
           <p class="small muted" style="margin:8px 0 0">If a link shows only initials, that site is probably blocking its images from being shown elsewhere. Save the image to your computer and use <b>Upload image</b> instead.</p>
           <p class="small muted" style="margin-bottom:0">Saved for this conference in every season of the dynasty.</p>
         </div>
@@ -929,6 +975,8 @@ function renderConferencePage() {
   $('#cf-logo-save').onclick = () => saveLogo($('#cf-logo').value.trim());
   $('#cf-logo').onkeydown = e => { if (e.key === 'Enter') saveLogo($('#cf-logo').value.trim()); };
   if ($('#cf-logo-reset')) $('#cf-logo-reset').onclick = () => saveLogo('');
+  $('#cf-color').onchange = e => { league.conferenceColors ||= {}; league.conferenceColors[conf] = e.target.value; persist(); toast('Conference color saved.'); render(); };
+  if ($('#cf-color-reset')) $('#cf-color-reset').onclick = () => { delete league.conferenceColors[conf]; persist(); render(); };
   $('#cf-logo-file').onchange = async e => { try { saveLogo(await imageFileToDataUrl(e.target.files[0])); } catch (err) { toast(err.message, true); } };
 }
 

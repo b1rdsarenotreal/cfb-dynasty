@@ -187,6 +187,42 @@ def main():
             page.wait_for_timeout(200)
             assert not page.is_visible("dialog[open]"), "sim button should not open the editor"
             assert page.evaluate("cfb.league.seasons[1998].games.filter(g=>g.week===3 && g.final).length") == before + 1
+            # Records entering each unplayed game; conference matchups get "W-L (W-L)", a corner logo and a colored border
+            page.click("[data-week='4']"); page.wait_for_selector(".game")
+            cards = page.evaluate("""() => [...document.querySelectorAll('.game')].map(c => ({
+                conf: c.classList.contains('conf-game'), corner: !!c.querySelector('.corner-logo'),
+                border: getComputedStyle(c).borderTopColor, cc: c.style.getPropertyValue('--cc'),
+                teams: [...c.querySelectorAll('.line')].map(l => ({ name: (l.querySelector('a.team-link')||{}).textContent || null, rec: (l.querySelector('.pre-rec')||{}).textContent || null })) }))""")
+            confs = [c for c in cards if c["conf"]]
+            page.screenshot(path=f"{OUT}/03b-week4-cards.png")
+            page.click("[data-week='2']"); page.wait_for_selector(".game")
+            cards2 = page.evaluate("""() => [...document.querySelectorAll('.game')].filter(c => !c.querySelector('.badge.final')).map(c => ({
+                conf: c.classList.contains('conf-game'), corner: !!c.querySelector('.corner-logo'),
+                teams: [...c.querySelectorAll('.line')].map(l => ({ name: (l.querySelector('a.team-link')||{}).textContent || null, rec: (l.querySelector('.pre-rec')||{}).textContent || null })) }))""")
+            nonconf = [c for c in cards2 if not c["conf"]]
+            assert confs and nonconf, (len(confs), len(nonconf))
+            import re as _re
+            for c in confs:
+                assert c["corner"] and c["cc"], c
+                for tm in c["teams"]: assert _re.fullmatch(r"\d+-\d+ \(\d+-\d+\)", tm["rec"] or ""), tm
+            for c in nonconf:
+                assert not c["corner"]
+                for tm in c["teams"]:
+                    if tm["name"]: assert _re.fullmatch(r"\d+-\d+", tm["rec"] or ""), tm
+            # The numbers match the results from weeks 1-3
+            sample = confs[0]["teams"][0]
+            expect = page.evaluate(f"""(() => {{ const s = cfb.league.seasons[1998], t = {json.dumps(sample["name"])}; let w=0,l=0,cw=0,cl=0;
+                for (const g of s.games) {{ if (!g.final || g.week >= 4 || (g.home!==t && g.away!==t)) continue;
+                  const won = (g.homeScore>g.awayScore ? g.home : g.away) === t; won ? w++ : l++;
+                  const a = s.teams[g.home], b = s.teams[g.away];
+                  if (g.type==='regular' && a && b && a.conference===b.conference && a.conference!=='FBS Independents') won ? cw++ : cl++; }}
+                return `${{w}}-${{l}} (${{cw}}-${{cl}})`; }})()""")
+            assert sample["rec"] == expect, (sample, expect)
+            print("week 4:", len(confs), "conference games; week 2:", len(nonconf), "unplayed non-conference; e.g.", sample["name"], sample["rec"])
+            # Finished games don't show the pre-game record
+            page.click("[data-week='1']"); page.wait_for_selector(".game")
+            assert page.locator(".game .pre-rec").count() == 0
+
             # Mid-season: nobody is a conference champion yet
             page.click("a[href='#/standings']")
             page.wait_for_selector(".card h2")
