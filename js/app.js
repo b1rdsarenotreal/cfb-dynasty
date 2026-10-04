@@ -15,6 +15,7 @@ const app = document.getElementById('app');
 const modal = document.getElementById('modal');
 
 const S = () => league.seasons[league.viewYear];
+const VOL = () => S().settings.volatility ?? 1;
 let ratingsCache = null;
 const R = () => (ratingsCache ||= computeRatings(S()));
 function changed() { ratingsCache = null; persist(); }
@@ -150,7 +151,7 @@ function gameCard(g) {
   if (g.name) meta += `<span class="badge gold">${esc(g.type === 'playoff' ? g.name.replace(/^CFP |^BCS /, '').replace(/ \(\d+ vs \d+\)/, '') : g.name)}</span>`;
   if (g.final) meta += `<span class="badge final">Final${qn > 4 ? '/OT' : ''}</span>${g.source ? `<span class="badge ${g.source}">${g.source}</span>` : ''}`;
   else if (g.home && g.away) {
-    const wp = winProbability(R(), g.home, g.away, g.neutral);
+    const wp = winProbability(R(), g.home, g.away, g.neutral, VOL());
     const fav = wp >= 0.5 ? g.home : g.away;
     meta += `<span>${esc(fav)} ${Math.round(Math.max(wp, 1 - wp) * 100)}%</span>`;
   }
@@ -212,7 +213,7 @@ function renderSchedule() {
 }
 
 function simResult(ratings, g) {
-  const r = simulateGame(ratings, g.home, g.away, { neutral: g.neutral, year: S().year });
+  const r = simulateGame(ratings, g.home, g.away, { neutral: g.neutral, year: S().year, volatility: VOL() });
   return { homeQ: r.homeQ, awayQ: r.awayQ, homeScore: r.homeScore, awayScore: r.awayScore, final: true, source: 'sim' };
 }
 function afterResults() { resolveBracket(S()); changed(); render(); }
@@ -267,7 +268,7 @@ function openGame(id, isNew = false) {
     for (const side of ['home', 'away']) $(`#m-${side}-tot`, modal).textContent = sum(Array.from({ length: qn }, (_, i) => q(side, i).value));
     const prev = $('#m-preview', modal);
     if (t.home && t.away) {
-      const wp = winProbability(R(), t.home, t.away, t.neutral), e = expectedScores(R(), t.home, t.away, t.neutral);
+      const wp = winProbability(R(), t.home, t.away, t.neutral, VOL()), e = expectedScores(R(), t.home, t.away, t.neutral);
       const ch = c => S().teams[c]?.color || '#999';
       prev.innerHTML = `<div class="small muted" style="margin-bottom:4px">Projection: ${esc(t.away)} ${e.away.toFixed(0)}, ${esc(t.home)} ${e.home.toFixed(0)} · ${esc(t.home)} wins ${Math.round(wp * 100)}%</div>
         <div class="wpbar"><div style="width:${(1 - wp) * 100}%;background:${esc(ch(t.away))}"></div><div style="width:${wp * 100}%;background:${esc(ch(t.home))}"></div></div>`;
@@ -288,7 +289,7 @@ function openGame(id, isNew = false) {
   $('#m-sim', modal).onclick = () => {
     const t = getTeams();
     if (!t.home || !t.away) return toast('Pick both teams first.', true);
-    const r = simulateGame(R(), t.home, t.away, { neutral: t.neutral, year: s.year });
+    const r = simulateGame(R(), t.home, t.away, { neutral: t.neutral, year: s.year, volatility: VOL() });
     fill(r.homeQ, r.awayQ); source = 'sim';
   };
   if ($('#m-clear', modal)) $('#m-clear', modal).onclick = () => {
@@ -412,17 +413,31 @@ function renderPolls() {
   const realW = Object.keys(s.realPolls || {}).map(Number);
   const realForWeek = s.realPolls?.[w === 99 ? Math.max(...realW) : w + 1] || s.realPolls?.[w];
   // Games each ranked team played since the previous poll, to help the commissioner move them.
-  const lastResult = t => {
-    const g = s.games.filter(x => x.final && (x.home === t || x.away === t) && x.week !== 'post' && (w === 99 || x.week <= w)).sort((a, b) => b.week - a.week)[0];
-    if (!g || w === 0) return '';
-    const won = winnerOf(g) === t, opp = g.home === t ? g.away : g.home;
-    return `<span class="small ${won ? 'move up' : 'move down'}" title="Most recent game">${won ? 'W' : 'L'} ${Math.max(g.homeScore, g.awayScore)}-${Math.min(g.homeScore, g.awayScore)}</span> <span class="small muted">${g.home === t ? 'vs' : '@'} ${esc(opp)}</span>`;
+  // What each team did in the week this poll covers: its result, BYE, or not played yet.
+  const weekResult = t => {
+    if (w === 0) return '';
+    const mine = x => x.home === t || x.away === t;
+    let gs;
+    if (w === 99) {
+      gs = s.games.filter(x => mine(x) && x.week === 'post');
+      if (!gs.length) return '<span class="small muted">No postseason game</span>';
+    } else {
+      gs = s.games.filter(x => mine(x) && x.week === w);
+      if (!gs.length) return '<span class="small muted">BYE</span>';
+    }
+    return gs.map(g => {
+      const opp = g.home === t ? g.away : g.home, at = g.neutral ? 'vs' : g.home === t ? 'vs' : '@';
+      if (!g.final) return `<span class="small muted">Not played yet · ${at} ${esc(opp || 'TBD')}</span>`;
+      const won = winnerOf(g) === t;
+      const label = w === 99 && g.name ? ` <span class="small muted">(${esc(g.name.replace(/^CFP |^BCS /, ''))})</span>` : '';
+      return `<span class="small ${won ? 'move up' : 'move down'}">${won ? 'W' : 'L'} ${Math.max(g.homeScore, g.awayScore)}-${Math.min(g.homeScore, g.awayScore)}</span> <span class="small muted">${at} ${esc(opp)}</span>${label}`;
+    }).join(' · ');
   };
   const row = (t, i) => {
     let move = '<span class="muted">—</span>';
     if (prev) { const p = prev.indexOf(t); move = p === -1 ? '<span class="move up">new</span>' : p > i ? `<span class="move up">▲${p - i}</span>` : p < i ? `<span class="move down">▼${i - p}</span>` : '<span class="muted">—</span>'; }
     return `<div class="poll-row" draggable="true" data-i="${i}">
-      <div class="r">${i + 1}</div><div class="poll-team">${team(t, { rank: false })}<div class="poll-last">${lastResult(t)}</div></div>
+      <div class="r">${i + 1}</div><div class="poll-team">${team(t, { rank: false })}<div class="poll-last">${weekResult(t)}</div></div>
       <div class="num muted small">${rec[t] ? `${rec[t].w}-${rec[t].l}` : ''}</div>
       <div class="small">${move}</div>
       <div class="num small muted rt" title="Where the suggested ranking puts this team">${sugRank[t] ? 'Sug #' + sugRank[t] : 'Sug —'}</div>
@@ -678,7 +693,7 @@ function renderTeamPage() {
       const ot = Math.max(g.homeQ.length, g.awayQ.length) > 4 ? ' (OT)' : '';
       result = `<b class="${us > them ? 'move up' : 'move down'}">${us > them ? 'W' : 'L'}</b> ${us}-${them}${ot}`;
     } else if (opp) {
-      const wp = winProbability(ratings, g.home, g.away, g.neutral);
+      const wp = winProbability(ratings, g.home, g.away, g.neutral, VOL());
       result = `<span class="muted">${Math.round((home ? wp : 1 - wp) * 100)}% to win</span>`;
     } else result = '<span class="muted">TBD</span>';
     return `<tr class="clickable" data-game="${g.id}"><td class="muted">${g.week === 'post' ? 'Post' : g.week}</td><td><span class="muted small" style="display:inline-block;width:18px">${where}</span>${team(opp)} ${label}</td><td>${result}</td><td class="small muted">${g.neutral ? 'Neutral' : home ? 'Home' : 'Away'}</td></tr>`;
@@ -786,6 +801,7 @@ function renderSettings() {
         <label class="field">Postseason format <select id="st-format">${Object.entries(FORMATS).map(([k, v]) => `<option value="${k}" ${k === s.settings.format ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
         <label class="check"><input type="checkbox" id="st-seedchamps" ${s.settings.seedByChampions ? 'checked' : ''}> 12-team: first-round byes go to the top 4 conference champions</label>
         <label class="check"><input type="checkbox" id="st-divs" ${s.settings.useDivisions ? 'checked' : ''}> Use divisions for standings and title-game matchups</label>
+        <label class="field">Upsets in simulated games <select id="st-vol">${[[0.8, 'Fewer — favorites win more often'], [1, 'Realistic — a 7-point favorite wins about 72%'], [1.25, 'More — closer to coin flips'], [1.6, 'Chaos']].map(([v, l]) => `<option value="${v}" ${(s.settings.volatility ?? 1) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
         <label class="field">How long last season matters (prior weight, in games): <b id="st-pw-v">${s.settings.priorWeight}</b><input type="range" id="st-pw" min="0" max="12" step="1" value="${s.settings.priorWeight}"></label>
         <label class="field">Historical anchor: <b id="st-aw-v">${Math.round(s.settings.anchorWeight * 100)}%</b>${s.realRatings ? '' : ' <span class="muted">(no real data for this season)</span>'}
           <input type="range" id="st-aw" min="0" max="1" step="0.05" value="${s.settings.anchorWeight}" ${s.realRatings ? '' : 'disabled'}></label>
@@ -805,6 +821,7 @@ function renderSettings() {
   $('#st-format').onchange = e => { s.settings.format = e.target.value; changed(); toast('Format updated. Rebuild the bracket on the Postseason page.'); };
   $('#st-seedchamps').onchange = e => { s.settings.seedByChampions = e.target.checked; changed(); };
   $('#st-divs').onchange = e => { s.settings.useDivisions = e.target.checked; changed(); };
+  $('#st-vol').onchange = e => { s.settings.volatility = Number(e.target.value); changed(); toast('Upset level saved for this season.'); };
   $('#st-pw').oninput = e => { s.settings.priorWeight = Number(e.target.value); $('#st-pw-v').textContent = e.target.value; changed(); };
   $('#st-aw').oninput = e => { s.settings.anchorWeight = Number(e.target.value); $('#st-aw-v').textContent = Math.round(e.target.value * 100) + '%'; changed(); };
   $('#st-key').onchange = e => { setApiKey(e.target.value); toast('API key saved in this browser.'); };

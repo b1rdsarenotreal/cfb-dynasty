@@ -56,7 +56,7 @@ export function solveRatings(games, teamNames, { prior = {}, priorWeight = 4, it
 }
 
 // Carry ratings into a new season, regressed toward average.
-export function regress(ratings, factor = 0.6) {
+export function regress(ratings, factor = 0.7) {
   const out = {};
   for (const [t, r] of Object.entries(ratings)) {
     if (t.startsWith('_')) continue;

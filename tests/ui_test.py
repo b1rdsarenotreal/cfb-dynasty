@@ -110,6 +110,17 @@ def handle(route):
         body = []
     route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
 
+def sim_all_weeks(page):
+    page.evaluate("location.hash = '#/schedule'")
+    page.wait_for_selector(".chips")
+    for _ in range(60):
+        if page.locator("#w-sim").count():
+            page.locator("#w-sim").click(); page.wait_for_timeout(120)
+        undone = page.locator(".chip:not(.done)")
+        if not undone.count():
+            break
+        undone.first.click(); page.wait_for_timeout(80)
+
 def main():
     server = subprocess.Popen([sys.executable, "-m", "http.server", str(PORT)], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(1)
@@ -183,14 +194,8 @@ def main():
             page.screenshot(path=f"{OUT}/04a-standings-midseason.png")
             page.click("a[href='#/schedule']")
             # Simulate the rest of the regular season week by week
-            for _ in range(20):
-                btn = page.query_selector("#w-sim")
-                if btn:
-                    btn.click(); page.wait_for_timeout(150)
-                chips = page.query_selector_all(".chip:not(.done)")
-                if not chips: break
-                chips[0].click()
-            page.wait_for_function("cfb.league.seasons[1998].games.every(g=>g.final)", timeout=5000)
+            sim_all_weeks(page)
+            assert page.evaluate("cfb.league.seasons[1998].games.every(g=>g.final)")
 
             # Standings
             page.click("a[href='#/standings']")
@@ -219,6 +224,11 @@ def main():
             page.click("[data-pw='6']")
             draft6 = page.evaluate("[...document.querySelectorAll('.poll-row .poll-team a')].map(a=>a.textContent)")
             assert draft6 == w5, (draft6[:5], w5[:5])
+            rows6 = page.evaluate("[...document.querySelectorAll('.poll-row')].map(r=>[r.querySelector('.poll-team a').textContent, r.querySelector('.poll-last').textContent])")
+            for nm6, txt6 in rows6:
+                has6 = page.evaluate(f"cfb.league.seasons[1998].games.some(g=>g.week===6 && (g.home==={json.dumps(nm6)}||g.away==={json.dumps(nm6)}))")
+                assert (txt6 == "BYE") == (not has6), (nm6, txt6, has6)
+            print("week 6 poll rows with BYE:", sum(1 for _, x in rows6 if x == "BYE"))
             page.select_option("#p-base", "suggestion")
             page.click("[data-pw='7']")
             draft7 = page.evaluate("[...document.querySelectorAll('.poll-row .poll-team a')].map(a=>a.textContent)")
@@ -287,6 +297,8 @@ def main():
             page.screenshot(path=f"{OUT}/09-teams.png")
             page.click("a[href='#/settings']")
             page.select_option("#st-format", "CFP12")
+            page.select_option("#st-vol", "0.8")
+            assert page.evaluate("cfb.league.seasons[1999].settings.volatility") == 0.8
             page.screenshot(path=f"{OUT}/10-settings.png")
 
             # Persistence: reload and confirm league survives
@@ -297,12 +309,7 @@ def main():
 
             # 12-team bracket on 1999 after simming everything
             page.click("a[href='#/schedule']")
-            for _ in range(25):
-                btn = page.query_selector("#w-sim")
-                if btn: btn.click(); page.wait_for_timeout(100)
-                chips = page.query_selector_all(".chip:not(.done)")
-                if not chips: break
-                chips[0].click()
+            sim_all_weeks(page)
             page.click("a[href='#/postseason']")
             page.click("#ps-ccg"); page.wait_for_timeout(100)
             page.click("a[href='#/schedule']"); page.click("#w-sim"); page.wait_for_timeout(100)
