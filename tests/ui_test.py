@@ -329,6 +329,19 @@ def main():
             print("1999 field: %d seeds, %d title-game champions, %d champ badges" % (len(seeds99), len(champs99), page.locator(".badge.gold", has_text="Champ").count()))
             page.click("#ps-build"); page.wait_for_timeout(200)
             assert page.evaluate("cfb.league.seasons[1999].games.filter(g=>g.type==='playoff').length") == 15
+            # Season 2 is playoff only: no Bowls step, no bowl games
+            assert page.locator("[data-step='bowls']").count() == 0, "no Bowls step after season one"
+            assert page.evaluate("cfb.league.seasons[1999].settings.bowls") is False
+            assert page.evaluate("cfb.league.seasons[1999].games.filter(g=>g.type==='bowl').length") == 0
+            # Sites: six different hosts, and the semifinals moved from season one
+            sf98 = page.evaluate("cfb.league.seasons[1998].games.filter(g=>g.round==='semifinal').map(g=>g.name.split('— ')[1])")
+            sf99 = page.evaluate("cfb.league.seasons[1999].games.filter(g=>g.round==='semifinal').map(g=>g.name.split('— ')[1])")
+            qf99 = page.evaluate("cfb.league.seasons[1999].games.filter(g=>g.round==='quarterfinal').map(g=>g.name.split('— ')[1])")
+            assert len(set(sf99 + qf99)) == 6, (sf99, qf99)
+            assert set(sf99) != set(sf98), ("semifinal sites repeated", sf98, sf99)
+            card = page.text_content(".sites-card")
+            assert all(x in card for x in sf99) and "Next season's semifinals" in card, card
+            print("semifinal sites 1998:", sf98, "-> 1999:", sf99)
             page.screenshot(path=f"{OUT}/11-bracket.png", full_page=True)
             for _ in range(5):
                 page.evaluate("location.hash='#/schedule'"); page.wait_for_selector(".chips")
@@ -367,6 +380,20 @@ def main():
             page.click("a[href='#/standings']")
             page.click(".card h2 a.team-link >> nth=0")
             page.wait_for_selector(".conf-hero")
+
+            # Upgrading an older save: unplayed bowls after season one are removed, season one keeps its bowls
+            bowls98 = page.evaluate("cfb.league.seasons[1998].games.filter(g=>g.type==='bowl').length")
+            page.evaluate("""() => { const L = cfb.league; L.noBowlsMigrated = false; delete L.futureBowls;
+              const s = L.seasons[1999]; s.settings.bowls = true;
+              s.games.push({ id: 'oldbowl', week: 'post', type: 'bowl', name: 'Old Bowl', home: 'Navy', away: 'Army', neutral: true, homeQ: [], awayQ: [], homeScore: null, awayScore: null, final: false }); }""")
+            page.click("a[href='#/settings']")
+            page.fill("#st-name", "Upgrade Test"); page.press("#st-name", "Tab"); page.wait_for_timeout(600)
+            page.reload(); page.wait_for_selector("#year-select"); page.wait_for_timeout(300)
+            assert page.evaluate("cfb.league.seasons[1999].games.some(g=>g.id==='oldbowl')") is False
+            assert page.evaluate("cfb.league.seasons[1999].settings.bowls") is False
+            assert page.evaluate("cfb.league.futureBowls") is False
+            assert page.evaluate("cfb.league.seasons[1998].games.filter(g=>g.type==='bowl').length") == bowls98
+            assert page.is_checked("#st-bowls") is False and page.is_checked("#st-futurebowls") is False
 
             # Mobile layout check
             page.set_viewport_size({"width": 390, "height": 844})

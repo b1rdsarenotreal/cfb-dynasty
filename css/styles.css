@@ -194,3 +194,4 @@ input[type=color] { width: 54px; height: 34px; padding: 2px; border: 1px solid v
 .conf-hero-logo { width: 92px; height: 92px; background: #fff; border-radius: 12px; display: grid; place-items: center; flex: none; }
 .conf-hero .btn { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.3); color: #fff; text-decoration: none; }
 .kpi .v a { color: inherit; }
+.sites-card { padding: 12px 16px; }

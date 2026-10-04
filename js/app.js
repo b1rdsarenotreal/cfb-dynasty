@@ -4,7 +4,7 @@ import { loadLogoTable, logoFor } from './logos.js';
 import { simulateGame, winProbability, expectedScores } from './sim.js';
 import { standings, records, hasCCG, conferenceChampion, allChampions, conferences, winnerOf, INDEPENDENT } from './standings.js';
 import { seasonRankings, displayRanks, officialOrder, rankHistory, finalPoll, pollWeeks, COMPUTERS, BCS_FIRST_WEEK, AP_VOTERS, COACHES_VOTERS } from './rankings.js';
-import { syncCCGs, selectField, buildPlayoff, buildBowls, resolveBracket, nationalChampion, blankGame, bowlEligible, lastRegularWeek, fullRanking } from './postseason.js';
+import { syncCCGs, selectField, buildPlayoff, buildBowls, resolveBracket, nationalChampion, blankGame, bowlEligible, lastRegularWeek, fullRanking, playoffSites, bowlsOn } from './postseason.js';
 import { FORMATS, FUTURE_FORMAT, defaultHasCCG } from './eras.js';
 import { computeRecords } from './records.js';
 import { rating, FCS } from './ratings.js';
@@ -116,7 +116,7 @@ function renderSetup() {
     btn.disabled = true;
     try {
       const season = await importSeason(year, key, { onProgress: m => (prog.textContent += m + '\n') });
-      league = { schemaVersion: SCHEMA_VERSION, name, startYear: year, currentYear: year, viewYear: year, seasons: { [year]: season }, cfp4Migrated: true, cfp16Migrated: true, futureFormat: FUTURE_FORMAT };
+      league = { schemaVersion: SCHEMA_VERSION, name, startYear: year, currentYear: year, viewYear: year, seasons: { [year]: season }, cfp4Migrated: true, cfp16Migrated: true, futureFormat: FUTURE_FORMAT, noBowlsMigrated: true, futureBowls: false };
       await saveLeague(league);
       location.hash = '#/schedule';
       toast(`${year} season loaded: ${Object.keys(season.teams).length} teams, ${season.games.length} games.`);
@@ -478,9 +478,11 @@ function renderPolls() {
 function renderPostseason() {
   const s = S(), ratings = R();
   const champ = nationalChampion(s);
+  const hasBowls = bowlsOn(s) || s.games.some(g => g.type === 'bowl');
+  if (ui.post === 'bowls' && !hasBowls) ui.post = 'field';
   const step = ui.post;
   const banner = champ ? `<div class="banner" style="margin-bottom:16px"><div class="trophy">🏆</div><div><div class="small" style="opacity:.8">${s.year} National Champion</div><div class="big">${esc(champ)}</div></div><span class="spacer"></span>${s.year === league.currentYear ? `<button class="btn primary" id="ps-next">Start ${s.year + 1} season →</button>` : ''}</div>` : '';
-  const steps = [['ccg', '1 · Title games'], ['field', `2 · ${s.settings.format === 'BCS' ? 'BCS title game' : s.settings.format === 'NONE' ? 'Selection' : 'Playoff'}`], ['bowls', '3 · Bowls']];
+  const steps = [['ccg', '1 · Title games'], ['field', `2 · ${s.settings.format === 'BCS' ? 'BCS title game' : s.settings.format === 'NONE' ? 'Selection' : 'Playoff'}`], ...(hasBowls ? [['bowls', '3 · Bowls']] : [])];
   let body = '';
   if (step === 'ccg') {
     const ccgs = s.games.filter(g => g.type === 'ccg');
@@ -500,7 +502,18 @@ function renderPostseason() {
       const champSet = new Set(Object.values(allChampions(s, ratings)).filter(Boolean));
       const rounds = ['first_round', 'quarterfinal', 'semifinal', 'final'].map(r => [r, playoff.filter(g => g.round === r)]).filter(([, gs]) => gs.length);
       const roundName = { first_round: 'First round', quarterfinal: 'Quarterfinals', semifinal: 'Semifinals', final: 'Championship' };
-      body = `
+      const fmt = s.settings.format, sites = playoffSites(s, league.seasons[s.year - 1]);
+      const builtSites = r => playoff.filter(g => g.round === r).map(g => (g.name.split('— ')[1] || '').trim()).filter(Boolean);
+      const qSites = builtSites('quarterfinal').length ? builtSites('quarterfinal') : sites.quarters;
+      const sSites = builtSites('semifinal').length ? builtSites('semifinal') : sites.semis;
+      const siteCard = fmt === 'CFP16' || fmt === 'CFP12' || fmt === 'CFP4' ? `
+        <div class="card sites-card"><div class="row" style="gap:20px;align-items:flex-start">
+          ${fmt !== 'CFP4' ? `<div><div class="small muted">Quarterfinals</div><div>${qSites.map(esc).join(' · ')}</div></div>` : ''}
+          <div><div class="small muted">Semifinals</div><div><b>${sSites.map(esc).join(' · ')}</b></div></div>
+          <span class="spacer"></span>
+          <div class="small muted" style="text-align:right">Sites rotate every season.<br>Next season's semifinals: ${sites.next.semis.map(esc).join(' & ')}</div>
+        </div></div>` : '';
+      body = `${siteCard}
         <div class="card">
           <div class="row" style="margin-bottom:8px"><h2 style="margin:0">${esc(FORMATS[s.settings.format])}</h2><span class="spacer"></span>
             <button class="btn" id="ps-propose">Propose field from rankings</button></div>
@@ -544,7 +557,8 @@ function renderPostseason() {
   if ($('#ps-build')) $('#ps-build').onclick = () => {
     const seeds = ui.seedDraft.seeds;
     if (seeds.some(x => !x) || new Set(seeds).size !== seeds.length) return toast('Every seed needs a different team.', true);
-    buildPlayoff(s, [...seeds]); ui.week = null; changed(); toast('Bracket built. Bowls may need a re-fill if playoff teams changed.'); render();
+    buildPlayoff(s, [...seeds], { prev: league.seasons[s.year - 1] }); ui.week = null; changed();
+    toast(bowlsOn(s) && s.games.some(g => g.type === 'bowl') ? 'Bracket built. Bowls may need a re-fill if playoff teams changed.' : 'Bracket built.'); render();
   };
   if ($('#ps-bowls')) $('#ps-bowls').onclick = () => {
     const finals = s.games.filter(g => g.type === 'bowl' && g.final).length;
@@ -569,6 +583,7 @@ async function startNextSeason() {
     const next = await nextSeason(s, getApiKey(), { onProgress: m => ($('#ns-prog').textContent += m + '\n') });
     next.preseasonCarry = finalPoll(s).ranks; // last year's final AP poll shapes the new preseason polls
     next.settings.format = league.futureFormat || FUTURE_FORMAT;
+    next.settings.bowls = !!league.futureBowls;
     league.seasons[next.year] = next; league.currentYear = league.viewYear = next.year;
     ui.week = null; ui.pollWeek = null; ui.seedDraft = null; ui.post = 'ccg';
     ratingsCache = null; await saveLeague(league);
@@ -840,7 +855,7 @@ function renderConferencePage() {
     <div class="kpis">
       <div class="kpi"><div class="v">${sum.champ ? esc(sum.champ) : '—'}</div><div class="l">${isIndy ? 'No champion' : 'Champion'}</div></div>
       <div class="kpi"><div class="v">${sum.nonConf.w}-${sum.nonConf.l}</div><div class="l">Non-conference</div></div>
-      <div class="kpi"><div class="v">${sum.post.w}-${sum.post.l}</div><div class="l">Bowls & playoff</div></div>
+      <div class="kpi"><div class="v">${sum.post.w}-${sum.post.l}</div><div class="l">Postseason</div></div>
       <div class="kpi"><div class="v">${sum.members.filter(t => ranks[t]).length}</div><div class="l">Ranked teams</div></div>
       <div class="kpi"><div class="v">${sum.avgRating >= 0 ? '+' : ''}${sum.avgRating.toFixed(1)}</div><div class="l">Average rating</div></div>
     </div>
@@ -849,7 +864,7 @@ function renderConferencePage() {
       <div>
         ${postGames.length ? `<div class="card"><h2>${s.year} postseason</h2><div class="games" style="grid-template-columns:1fr">${postGames.map(gameCard).join('')}</div></div>` : ''}
         <div class="card"><h2>Champions</h2>
-          <table><thead><tr><th>Year</th><th>Champion</th><th class="num">Bowls</th><th>Notes</th></tr></thead><tbody>
+          <table><thead><tr><th>Year</th><th>Champion</th><th class="num">Postseason</th><th>Notes</th></tr></thead><tbody>
           ${history.map(h => `<tr><td><button class="btn sm ghost" data-yr="${h.y}">${h.y}</button></td><td>${h.champ ? team(h.champ, { rank: false }) : '<span class="muted">—</span>'}</td><td class="num">${h.post.w}-${h.post.l}</td><td class="small">${h.natty ? `🏆 ${esc(h.natty)} national champion` : ''}${h.playoff.length ? `${h.natty ? ' · ' : ''}${h.playoff.length} in playoff` : ''}</td></tr>`).join('')}
           </tbody></table>
         </div>
@@ -884,7 +899,7 @@ function renderRecords() {
   let body = '';
   if (tab === 'alltime') {
     body = `<div class="card"><h2>All-time standings</h2><p class="small muted">Since ${rec.years[0]} · ${rec.years.length} season${rec.years.length > 1 ? 's' : ''} · click a column header to sort.</p>
-      <div class="table-wrap"><table id="alltime"><thead><tr><th class="num">#</th><th data-sort="team">Team</th><th class="num" data-sort="w">W</th><th class="num" data-sort="l">L</th><th class="num" data-sort="pct">Pct</th><th class="num" data-sort="natTitles">Natl titles</th><th class="num" data-sort="confTitles">Conf titles</th><th class="num" data-sort="playoffs">Playoffs</th><th class="num" data-sort="bowl">Bowl/playoff</th><th class="num" data-sort="weeksAt1">Weeks #1</th><th class="num" data-sort="top25">Final top 25</th><th class="num" data-sort="pf">PF</th><th class="num" data-sort="pa">PA</th></tr></thead><tbody>
+      <div class="table-wrap"><table id="alltime"><thead><tr><th class="num">#</th><th data-sort="team">Team</th><th class="num" data-sort="w">W</th><th class="num" data-sort="l">L</th><th class="num" data-sort="pct">Pct</th><th class="num" data-sort="natTitles">Natl titles</th><th class="num" data-sort="confTitles">Conf titles</th><th class="num" data-sort="playoffs">Playoffs</th><th class="num" data-sort="bowl">Postseason</th><th class="num" data-sort="weeksAt1">Weeks #1</th><th class="num" data-sort="top25">Final top 25</th><th class="num" data-sort="pf">PF</th><th class="num" data-sort="pa">PA</th></tr></thead><tbody>
       ${sortAllTime(rec.allTime).map((r, i) => `<tr><td class="num muted">${i + 1}</td><td>${team(r.team, { rank: false })}</td><td class="num">${r.w}</td><td class="num">${r.l}</td><td class="num">${pct(r.w, r.l)}</td><td class="num">${r.natTitles || ''}</td><td class="num">${r.confTitles || ''}</td><td class="num">${r.playoffs || ''}</td><td class="num">${r.bowlW + r.bowlL ? `${r.bowlW}-${r.bowlL}` : ''}</td><td class="num">${r.weeksAt1 || ''}</td><td class="num">${r.top25 || ''}</td><td class="num">${r.pf}</td><td class="num">${r.pa}</td></tr>`).join('')}
       </tbody></table></div></div>`;
   } else if (tab === 'season') {
@@ -959,7 +974,9 @@ function renderSettings() {
       <div class="card stack">
         <h2>${s.year} season rules</h2>
         <label class="field">Playoff format for future seasons <select id="st-future">${Object.entries(FORMATS).map(([k, v]) => `<option value="${k}" ${k === (league.futureFormat || FUTURE_FORMAT) ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+        <label class="check"><input type="checkbox" id="st-futurebowls" ${league.futureBowls ? 'checked' : ''}> Bowl games in future seasons</label>
         <label class="field">Postseason format this season (${s.year}) <select id="st-format">${Object.entries(FORMATS).map(([k, v]) => `<option value="${k}" ${k === s.settings.format ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+        <label class="check"><input type="checkbox" id="st-bowls" ${bowlsOn(s) ? 'checked' : ''}> Bowl games this season (${s.year})</label>
         <label class="check"><input type="checkbox" id="st-seedchamps" ${s.settings.seedByChampions ? 'checked' : ''}> 12-team: first-round byes go to the top 4 conference champions</label>
         <label class="check"><input type="checkbox" id="st-divs" ${s.settings.useDivisions ? 'checked' : ''}> Use divisions for standings and title-game matchups</label>
         <label class="field">Upsets in simulated games <select id="st-vol">${[[0.8, 'Fewer — favorites win more often'], [1, 'Realistic — a 7-point favorite wins about 72%'], [1.25, 'More — closer to coin flips'], [1.6, 'Chaos']].map(([v, l]) => `<option value="${v}" ${(s.settings.volatility ?? 1) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
@@ -980,6 +997,16 @@ function renderSettings() {
       </div>
     </div>`;
   $('#st-future').onchange = e => { league.futureFormat = e.target.value; persist(); toast('New seasons will use this playoff format.'); };
+  $('#st-futurebowls').onchange = e => { league.futureBowls = e.target.checked; persist(); toast(e.target.checked ? 'New seasons will include bowl games.' : 'New seasons will be playoff only.'); };
+  $('#st-bowls').onchange = e => {
+    const bowls = s.games.filter(g => g.type === 'bowl');
+    if (!e.target.checked && bowls.length) {
+      const played = bowls.filter(g => g.final).length;
+      if (!confirm(`Remove this season's ${bowls.length} bowl game${bowls.length > 1 ? 's' : ''}${played ? `, including ${played} with results` : ''}?`)) { e.target.checked = true; return; }
+      s.games = s.games.filter(g => g.type !== 'bowl');
+    }
+    s.settings.bowls = e.target.checked; changed(); toast(e.target.checked ? 'Bowl games are on for this season.' : 'This season is playoff only.');
+  };
   $('#st-format').onchange = e => { s.settings.format = e.target.value; changed(); toast('Format updated. Rebuild the bracket on the Postseason page.'); };
   $('#st-seedchamps').onchange = e => { s.settings.seedByChampions = e.target.checked; changed(); };
   $('#st-divs').onchange = e => { s.settings.useDivisions = e.target.checked; changed(); };
@@ -1018,6 +1045,18 @@ function renderSettings() {
         if (season.year > league.startYear && !season.games.some(g => g.type === 'playoff' || g.type === 'bowl')) season.settings.format = league.futureFormat;
       }
       league.cfp16Migrated = true; persist();
+    }
+    // Bowl games end after the first season; only the playoff remains.
+    // Seasons that already played bowls keep them as history.
+    if (!league.noBowlsMigrated) {
+      league.futureBowls = false;
+      for (const season of Object.values(league.seasons)) {
+        if (season.year <= league.startYear) continue;
+        if (season.games.some(g => g.type === 'bowl' && g.final)) continue;
+        season.settings.bowls = false;
+        season.games = season.games.filter(g => g.type !== 'bowl');
+      }
+      league.noBowlsMigrated = true; persist();
     }
   }
   render();

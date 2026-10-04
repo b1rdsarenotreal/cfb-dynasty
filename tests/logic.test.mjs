@@ -146,7 +146,8 @@ function playAll(s, filter = () => true) {
   const field = selectField(s, computeRatings(s));
   const games = buildPlayoff(s, field.seeds);
   assert.equal(games.length, 3);
-  assert.match(games[0].name, /Peach Bowl/);
+  const { playoffSites } = await import('../js/postseason.js');
+  assert.ok(games[0].name.endsWith(playoffSites(s).semis[0]));
   playAll(s, g => g.round === 'semifinal');
   resolveBracket(s);
   const f = s.games.find(g => g.round === 'final');
@@ -237,3 +238,40 @@ console.log('Rankings tests passed.');
   console.log(`16-team: ${champs.length} champions + ${atLarge.length} at-large; champion ${nationalChampion(s)}`);
 }
 console.log('16-team playoff tests passed.');
+
+// --- Playoff sites rotate every season; seasons can run without bowls
+{
+  const { playoffSites, SITE_CYCLE, bowlsOn } = await import('../js/postseason.js');
+  // Every season uses all six sites exactly once.
+  for (const c of SITE_CYCLE) assert.equal(new Set([...c.semis, ...c.quarters]).size, 6);
+  // Each site hosts a semifinal once per cycle.
+  const semiHosts = SITE_CYCLE.flatMap(c => c.semis);
+  assert.equal(new Set(semiHosts).size, 6);
+  // Chain three seasons, each following the previous one's bracket.
+  let prev = null; const semis = [], qfs = [];
+  for (const year of [2005, 2006, 2007, 2008]) {
+    const s = makeSeason(year, 'CFP16');
+    playAll(s);
+    const ratings = computeRatings(s);
+    buildPlayoff(s, selectField(s, ratings).seeds, { prev });
+    const sf = s.games.filter(g => g.round === 'semifinal').map(g => g.name.split('— ')[1]);
+    const qf = s.games.filter(g => g.round === 'quarterfinal').map(g => g.name.split('— ')[1]);
+    assert.deepEqual(sf, playoffSites(s, prev).semis);
+    assert.equal(new Set([...sf, ...qf]).size, 6, 'six different sites');
+    semis.push(sf.join('+')); qfs.push(qf.join('+'));
+    // Bowls off: no bowl games, champion still crowned.
+    s.settings.bowls = false;
+    assert.equal(bowlsOn(s), false);
+    for (const round of ['first_round', 'quarterfinal', 'semifinal', 'final']) { resolveBracket(s); playAll(s, g => g.round === round); }
+    assert.ok(nationalChampion(s));
+    assert.equal(s.games.filter(g => g.type === 'bowl').length, 0);
+    prev = s;
+  }
+  for (let i = 1; i < semis.length; i++) { assert.notEqual(semis[i], semis[i - 1]); assert.notEqual(qfs[i], qfs[i - 1]); }
+  assert.equal(semis[0], semis[3], 'three-year cycle');
+  // The final polls still come out after a playoff-only postseason.
+  const { seasonRankings } = await import('../js/rankings.js');
+  assert.ok(seasonRankings(prev).available.includes(99));
+  console.log('Semifinal sites by season:', semis.join(' | '));
+}
+console.log('Rotation and no-bowl tests passed.');

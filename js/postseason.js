@@ -73,17 +73,37 @@ export function selectField(season, ratings) {
 }
 
 // ---------- Bracket construction ----------
-const CFP4_SEMI_SITES = [['Rose Bowl', 'Sugar Bowl'], ['Orange Bowl', 'Cotton Bowl'], ['Peach Bowl', 'Fiesta Bowl']];
-const CFP12_QF_SITES = ['Fiesta Bowl', 'Peach Bowl', 'Rose Bowl', 'Sugar Bowl'];
-const CFP12_SF_SITES = ['Orange Bowl', 'Cotton Bowl'];
-const CFP16_QF_SITES = ['Rose Bowl', 'Sugar Bowl', 'Orange Bowl', 'Fiesta Bowl'];
-const CFP16_SF_SITES = ['Cotton Bowl', 'Peach Bowl'];
+// Six host sites rotate on a three-year cycle: each season two of them hold
+// the semifinals and the other four hold the quarterfinals, so every site
+// hosts a semifinal once every three years.
+export const SITE_CYCLE = [
+  { semis: ['Cotton Bowl', 'Peach Bowl'], quarters: ['Rose Bowl', 'Sugar Bowl', 'Orange Bowl', 'Fiesta Bowl'] },
+  { semis: ['Rose Bowl', 'Sugar Bowl'], quarters: ['Orange Bowl', 'Fiesta Bowl', 'Cotton Bowl', 'Peach Bowl'] },
+  { semis: ['Orange Bowl', 'Fiesta Bowl'], quarters: ['Cotton Bowl', 'Peach Bowl', 'Rose Bowl', 'Sugar Bowl'] },
+];
+const siteOf = name => (String(name || '').split('— ')[1] || '').trim();
+
+// Where this season's quarterfinals and semifinals are played. The cycle picks
+// up after wherever the previous season's semifinals were held, so consecutive
+// seasons never repeat; with no previous playoff it falls back to the year.
+export function playoffSites(season, prev = null) {
+  let idx = ((season.year % 3) + 3) % 3;
+  const prevSemi = prev?.games?.find(g => g.type === 'playoff' && g.round === 'semifinal');
+  if (prevSemi) {
+    const k = SITE_CYCLE.findIndex(c => c.semis.includes(siteOf(prevSemi.name)));
+    if (k >= 0) idx = (k + 1) % 3;
+  }
+  return { index: idx, ...SITE_CYCLE[idx], next: SITE_CYCLE[(idx + 1) % 3] };
+}
+
+export const bowlsOn = season => season.settings.bowls !== false;
 
 function slotGame(season, round, name, homeSlot, awaySlot, neutral = true) {
   return blankGame(season, { type: 'playoff', round, name, neutral, week: 'post', homeSlot, awaySlot });
 }
 
-export function buildPlayoff(season, seeds) {
+export function buildPlayoff(season, seeds, { prev = null } = {}) {
+  const sites = playoffSites(season, prev);
   season.games = season.games.filter(g => g.type !== 'playoff');
   season.playoffSeeds = seeds;
   const fmt = season.settings.format;
@@ -93,26 +113,25 @@ export function buildPlayoff(season, seeds) {
   if (fmt === 'BCS') {
     games.push(slotGame(season, 'final', 'BCS National Championship', S(1), S(2)));
   } else if (fmt === 'CFP4') {
-    const sites = CFP4_SEMI_SITES[(season.year - 2014 + 300) % 3];
-    const s1 = slotGame(season, 'semifinal', `National Semifinal — ${sites[0]}`, S(1), S(4));
-    const s2 = slotGame(season, 'semifinal', `National Semifinal — ${sites[1]}`, S(2), S(3));
+    const s1 = slotGame(season, 'semifinal', `National Semifinal — ${sites.semis[0]}`, S(1), S(4));
+    const s2 = slotGame(season, 'semifinal', `National Semifinal — ${sites.semis[1]}`, S(2), S(3));
     games.push(s1, s2, slotGame(season, 'final', 'National Championship', W(s1), W(s2)));
   } else if (fmt === 'CFP16') {
     // First round on the higher seed's campus; bracket keeps 1 and 2 apart until the final.
     const pairs = [[1, 16], [8, 9], [5, 12], [4, 13], [6, 11], [3, 14], [7, 10], [2, 15]];
     const r1 = pairs.map(([a, b]) => slotGame(season, 'first_round', `Playoff First Round (${a} vs ${b})`, S(a), S(b), false));
-    const qf = [0, 1, 2, 3].map(i => slotGame(season, 'quarterfinal', `Playoff Quarterfinal — ${CFP16_QF_SITES[i]}`, W(r1[2 * i]), W(r1[2 * i + 1])));
-    const sf1 = slotGame(season, 'semifinal', `National Semifinal — ${CFP16_SF_SITES[0]}`, W(qf[0]), W(qf[1]));
-    const sf2 = slotGame(season, 'semifinal', `National Semifinal — ${CFP16_SF_SITES[1]}`, W(qf[2]), W(qf[3]));
+    const qf = [0, 1, 2, 3].map(i => slotGame(season, 'quarterfinal', `Playoff Quarterfinal — ${sites.quarters[i]}`, W(r1[2 * i]), W(r1[2 * i + 1])));
+    const sf1 = slotGame(season, 'semifinal', `National Semifinal — ${sites.semis[0]}`, W(qf[0]), W(qf[1]));
+    const sf2 = slotGame(season, 'semifinal', `National Semifinal — ${sites.semis[1]}`, W(qf[2]), W(qf[3]));
     games.push(...r1, ...qf, sf1, sf2, slotGame(season, 'final', 'National Championship', W(sf1), W(sf2)));
   } else if (fmt === 'CFP12') {
     // First round at the higher seed's stadium.
     const r = [[8, 9], [5, 12], [7, 10], [6, 11]].map(([a, b]) =>
       slotGame(season, 'first_round', `CFP First Round (${a} vs ${b})`, S(a), S(b), false));
     const qfSeed = [1, 4, 2, 3];
-    const qf = r.map((g, i) => slotGame(season, 'quarterfinal', `CFP Quarterfinal — ${CFP12_QF_SITES[i]}`, S(qfSeed[i]), W(g)));
-    const sf1 = slotGame(season, 'semifinal', `CFP Semifinal — ${CFP12_SF_SITES[0]}`, W(qf[0]), W(qf[1]));
-    const sf2 = slotGame(season, 'semifinal', `CFP Semifinal — ${CFP12_SF_SITES[1]}`, W(qf[2]), W(qf[3]));
+    const qf = r.map((g, i) => slotGame(season, 'quarterfinal', `CFP Quarterfinal — ${sites.quarters[i]}`, S(qfSeed[i]), W(g)));
+    const sf1 = slotGame(season, 'semifinal', `CFP Semifinal — ${sites.semis[0]}`, W(qf[0]), W(qf[1]));
+    const sf2 = slotGame(season, 'semifinal', `CFP Semifinal — ${sites.semis[1]}`, W(qf[2]), W(qf[3]));
     games.push(...r, ...qf, sf1, sf2, slotGame(season, 'final', 'CFP National Championship', W(sf1), W(sf2)));
   }
   season.games.push(...games);

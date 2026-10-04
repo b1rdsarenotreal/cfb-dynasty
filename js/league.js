@@ -15,7 +15,7 @@ export function newSeasonShell(year) {
     playoffSeeds: null, phase: 'regular', nextId: 1,
     settings: {
       format: defaultFormat(year), seedByChampions: defaultSeedByChampions(year),
-      useDivisions: defaultUseDivisions(year), ccg: {}, priorWeight: 4, anchorWeight: 0.5,
+      useDivisions: defaultUseDivisions(year), ccg: {}, priorWeight: 4, anchorWeight: 0.5, bowls: true,
     },
   };
 }
